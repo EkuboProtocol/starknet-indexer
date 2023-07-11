@@ -9,7 +9,6 @@ import {
 } from "@apibara/starknet";
 import { existsSync, readFileSync, writeFileSync } from "fs";
 import { Cursor, StreamClient, v1alpha2 } from "@apibara/protocol";
-import { CloudflareKV } from "./cf";
 import { toNftAttributes } from "./minted";
 import {
   parseLong,
@@ -20,6 +19,7 @@ import {
   TransferEvent,
 } from "./parse";
 import { BlockMeta, EventProcessor } from "./processor";
+import { PostgresClient } from "./postgres";
 import { createLogger, format, transports } from "winston";
 
 const logger = createLogger({
@@ -30,17 +30,13 @@ const logger = createLogger({
     }),
     format.errors({ stack: true }),
     format.splat(),
-    format.json()
+    format.json(),
   ),
   defaultMeta: { service: "ekubo-indexer" },
   transports: [new transports.Console()],
 });
 
-const kv = new CloudflareKV({
-  accountId: process.env.CLOUDFLARE_ACCOUNT_ID,
-  namespaceId: process.env.CLOUDFLARE_KV_NAMESPACE_ID,
-  apiToken: process.env.CLOUDFLARE_API_TOKEN,
-});
+const pg = new PostgresClient();
 
 let cursor: v1alpha2.ICursor;
 const CURSOR_PATH = process.env.CURSOR_FILE;
@@ -72,9 +68,8 @@ const EVENT_PROCESSORS: EventProcessor<any>[] = [
     },
     parser: (ev) => parsePositionMintedEvent(ev.event.data, 0).value,
     handle: async (ev, meta) => {
-      const key = ev.token_id.toString();
-      await kv.write(key, JSON.stringify(toNftAttributes(ev)));
-      logger.info(`Wrote token ID`, { key, meta });
+      logger.info("Minted", { ev, meta })
+      await pg.insertToken(ev, meta);
     },
   },
   {
@@ -90,12 +85,8 @@ const EVENT_PROCESSORS: EventProcessor<any>[] = [
     parser: (ev) => parseTransferEvent(ev.event.data, 0).value,
     async handle(ev: TransferEvent, meta): Promise<void> {
       if (meta.isFinal && BigInt(ev.to) === 0n) {
-        logger.info("Burned token", {
-          token_id: ev.token_id,
-        });
-
-        // remove the key so api stops responding to requests about the token
-        await kv.delete(ev.token_id.toString());
+        logger.info("Burned", { ev, meta })
+        await pg.deleteToken(ev, meta);
       }
     },
   },
@@ -112,6 +103,8 @@ const EVENT_PROCESSORS: EventProcessor<any>[] = [
     parser: (ev) => parsePositionUpdatedEvent(ev.event.data, 0).value,
     async handle(ev: PositionUpdatedEvent, meta): Promise<void> {
       // todo: handle these events
+      logger.info("Position updated", { ev, meta })
+      await pg.insertPosition(ev, meta);
     },
   },
 ];
@@ -150,6 +143,7 @@ const writeCursorIfNecessary = debounce(
 );
 
 (async function () {
+  await pg.connect();
   for await (const message of client) {
     let messageType = !!message.heartbeat
       ? "heartbeat"
