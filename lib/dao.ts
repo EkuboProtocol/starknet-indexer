@@ -263,4 +263,35 @@ export class EventDAO {
       ],
     });
   }
+
+  private async invalidate(
+    table: "swaps" | "position_updates" | "position_metadata",
+    invalidatedBlockNumber: bigint
+  ) {
+    await this.pg.query({
+      name: "invalidate",
+      text: `
+        DELETE FROM ${table}
+        WHERE LOWER(_valid) >= $1;
+      `,
+      values: [invalidatedBlockNumber],
+    });
+    await this.pg.query({
+      name: "update-upper-bounds",
+      text: `
+      UPDATE ${table}
+        SET _valid = int8range(LOWER(_valid), 'infinity'::int8)
+        WHERE UPPER(_valid) >= $1;
+      `,
+      values: [invalidatedBlockNumber],
+    });
+  }
+
+  public async invalidateBlockNumber(invalidatedBlockNumber: bigint) {
+    await Promise.all([
+      this.invalidate("swaps", invalidatedBlockNumber),
+      this.invalidate("position_updates", invalidatedBlockNumber),
+      this.invalidate("position_metadata", invalidatedBlockNumber),
+    ]);
+  }
 }

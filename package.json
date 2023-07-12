@@ -14,7 +14,7 @@
   "author": "Moody Salem",
   "dependencies": {
     "@apibara/protocol": "^0.4.8",
-    "@apibara/starknet": "^0.2.1",
+    "@apibara/starknet": "^0.3.0",
     "pg": "^8.11.1"
   },
   "devDependencies": {

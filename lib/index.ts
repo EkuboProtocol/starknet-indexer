@@ -201,10 +201,16 @@ const client = new StreamClient({
         logger.debug(`Heartbeat`);
         break;
       case "invalidate":
+        let invalidatedCursor = Cursor.toObject(message.invalidate.cursor);
+
         logger.warn(`Invalidated cursor`, {
-          cursor: Cursor.toObject(message.data.endCursor),
+          cursor: invalidatedCursor,
         });
+
+        await dao.startTransaction();
+        await dao.invalidateBlockNumber(BigInt(invalidatedCursor.orderKey));
         await dao.writeCursor(message.invalidate.cursor);
+        await dao.endTransaction();
         break;
 
       case "unknown":
