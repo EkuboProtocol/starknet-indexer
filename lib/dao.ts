@@ -299,24 +299,35 @@ export class EventDAO {
     });
   }
 
-  private async invalidate(
-    table: "swaps" | "position_updates" | "position_metadata",
-    invalidatedBlockNumber: bigint
-  ) {
+  private async invalidatePositionMetadata(invalidatedBlockNumber: bigint) {
     await this.pg.query({
-      name: "invalidate",
+      name: "invalidate-position-metadata",
       text: `
-        DELETE FROM ${table}
+        DELETE FROM position_metadata
         WHERE LOWER(_valid) >= $1;
       `,
       values: [invalidatedBlockNumber],
     });
     await this.pg.query({
-      name: "update-upper-bounds",
+      name: "update-position-metadata-upper-bounds",
       text: `
-      UPDATE ${table}
-        SET _valid = int8range(LOWER(_valid), 'infinity'::INT8)
+      UPDATE position_metadata
+        SET _valid = int8range(LOWER(_valid), NULL)
         WHERE UPPER(_valid) >= $1;
+      `,
+      values: [invalidatedBlockNumber],
+    });
+  }
+
+  private async deleteFromTableWithBlockNumber(
+    table: "swaps" | "position_updates",
+    invalidatedBlockNumber: bigint
+  ): Promise<void> {
+    await this.pg.query({
+      name: `delete-${table}-after-block-number`,
+      text: `
+        DELETE FROM ${table}
+        WHERE block_number >= $1;
       `,
       values: [invalidatedBlockNumber],
     });
@@ -324,9 +335,12 @@ export class EventDAO {
 
   public async invalidateBlockNumber(invalidatedBlockNumber: bigint) {
     await Promise.all([
-      this.invalidate("swaps", invalidatedBlockNumber),
-      this.invalidate("position_updates", invalidatedBlockNumber),
-      this.invalidate("position_metadata", invalidatedBlockNumber),
+      this.invalidatePositionMetadata(invalidatedBlockNumber),
+      this.deleteFromTableWithBlockNumber("swaps", invalidatedBlockNumber),
+      this.deleteFromTableWithBlockNumber(
+        "position_updates",
+        invalidatedBlockNumber
+      ),
     ]);
   }
 
