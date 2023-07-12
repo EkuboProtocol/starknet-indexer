@@ -10,8 +10,11 @@ import {
   parseLong,
   parsePositionMintedEvent,
   parsePositionUpdatedEvent,
+  parseSwappedEvent,
   parseTransferEvent,
+  PositionMintedEvent,
   PositionUpdatedEvent,
+  SwappedEvent,
   TransferEvent,
 } from "./parse";
 import { BlockMeta, EventProcessor } from "./processor";
@@ -34,8 +37,8 @@ const dao = new EventDAO(
   })
 );
 
-const EVENT_PROCESSORS: EventProcessor<any>[] = [
-  {
+const EVENT_PROCESSORS = [
+  <EventProcessor<PositionMintedEvent>>{
     filter: {
       fromAddress: FieldElement.fromBigInt(process.env.POSITIONS_ADDRESS),
       keys: [
@@ -45,13 +48,13 @@ const EVENT_PROCESSORS: EventProcessor<any>[] = [
         ),
       ],
     },
-    parser: (ev) => parsePositionMintedEvent(ev.event.data, 0).value,
+    parser: parsePositionMintedEvent,
     handle: async (ev, meta) => {
       logger.debug("PositionMinted", { ev, meta });
       await dao.insertPositionMetadata(ev, meta);
     },
   },
-  {
+  <EventProcessor<TransferEvent>>{
     filter: {
       fromAddress: FieldElement.fromBigInt(process.env.POSITIONS_ADDRESS),
       keys: [
@@ -61,7 +64,7 @@ const EVENT_PROCESSORS: EventProcessor<any>[] = [
         ),
       ],
     },
-    parser: (ev) => parseTransferEvent(ev.event.data, 0).value,
+    parser: parseTransferEvent,
     async handle(ev: TransferEvent, meta): Promise<void> {
       if (meta.isFinal && BigInt(ev.to) === 0n) {
         logger.debug("Position Burned", { ev, meta });
@@ -69,7 +72,7 @@ const EVENT_PROCESSORS: EventProcessor<any>[] = [
       }
     },
   },
-  {
+  <EventProcessor<PositionUpdatedEvent>>{
     filter: {
       fromAddress: FieldElement.fromBigInt(process.env.CORE_ADDRESS),
       keys: [
@@ -79,13 +82,33 @@ const EVENT_PROCESSORS: EventProcessor<any>[] = [
         ),
       ],
     },
-    parser: (ev) => parsePositionUpdatedEvent(ev.event.data, 0).value,
+    parser: parsePositionUpdatedEvent,
     async handle(ev: PositionUpdatedEvent, meta): Promise<void> {
       logger.debug("PositionUpdated", { ev, meta });
-      await dao.insertPositionUpdated(ev, meta);
+      if (meta.isFinal) {
+        await dao.insertPositionUpdated(ev, meta);
+      }
     },
   },
-];
+  <EventProcessor<SwappedEvent>>{
+    filter: {
+      fromAddress: FieldElement.fromBigInt(process.env.CORE_ADDRESS),
+      keys: [
+        // swap events
+        FieldElement.fromBigInt(
+          0x157717768aca88da4ac4279765f09f4d0151823d573537fbbeb950cdbd9a870n
+        ),
+      ],
+    },
+    parser: parseSwappedEvent,
+    async handle(ev: SwappedEvent, meta): Promise<void> {
+      if (meta.isFinal) {
+        logger.debug("Swapped Event", { ev, meta });
+        await dao.insertSwappedEvent(ev, meta);
+      }
+    },
+  },
+] as const;
 
 const client = new StreamClient({
   url: process.env.APIBARA_URL,
@@ -146,22 +169,25 @@ const client = new StreamClient({
 
             await dao.startTransaction();
             await Promise.all(
-              EVENT_PROCESSORS.flatMap((processor) => {
-                return events
-                  .filter((ev) => {
-                    return (
-                      FieldElement.toBigInt(ev.event.fromAddress) ===
-                        FieldElement.toBigInt(processor.filter.fromAddress) &&
-                      ev.event.keys.length === processor.filter.keys.length &&
-                      ev.event.keys.every(
-                        (key, ix) =>
-                          FieldElement.toBigInt(key) ===
-                          FieldElement.toBigInt(processor.filter.keys[ix])
-                      )
-                    );
-                  })
-                  .map(processor.parser)
-                  .map((ev) => processor.handle(ev, meta));
+              EVENT_PROCESSORS.flatMap(({ parser, handle, filter }) => {
+                return (
+                  events
+                    .filter((ev) => {
+                      return (
+                        FieldElement.toBigInt(ev.event.fromAddress) ===
+                          FieldElement.toBigInt(filter.fromAddress) &&
+                        ev.event.keys.length === filter.keys.length &&
+                        ev.event.keys.every(
+                          (key, ix) =>
+                            FieldElement.toBigInt(key) ===
+                            FieldElement.toBigInt(filter.keys[ix])
+                        )
+                      );
+                    })
+                    .map((ev) => parser(ev.event.data, 0).value)
+                    // unavoidable `as any` because the parser type is a union of all the types
+                    .map((ev) => handle(ev as any, meta))
+                );
               })
             );
             await dao.writeCursor(message.data.cursor);

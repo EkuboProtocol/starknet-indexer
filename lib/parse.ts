@@ -4,7 +4,7 @@ export function parseLong(long: number | Long): bigint {
   return BigInt(typeof long === "number" ? long : long.toNumber());
 }
 
-interface Parser<T> {
+export interface Parser<T> {
   (data: starknet.IFieldElement[], startingFrom: number): {
     value: T;
     next: number;
@@ -39,6 +39,7 @@ export const parseI129: Parser<bigint> = (data, startingFrom) => {
 type GetParserType<T extends Parser<any>> = T extends Parser<infer U>
   ? U
   : never;
+
 export function combineParsers<
   T extends {
     [key: string]: unknown;
@@ -74,6 +75,24 @@ export function combineParsers<
 export const parseAddress: Parser<string> = (data, startingFrom) => {
   return {
     value: FieldElement.toHex(data[startingFrom]),
+    next: startingFrom + 1,
+  };
+};
+
+export const parseBoolean: Parser<boolean> = (data, startingFrom) => {
+  let num = FieldElement.toBigInt(data[startingFrom]);
+  let value: boolean;
+  if (num === 0n) {
+    value = false;
+  } else {
+    if (num === 1n) {
+      value = true;
+    } else {
+      throw new Error("Invalid boolean value");
+    }
+  }
+  return {
+    value,
     next: startingFrom + 1,
   };
 };
@@ -120,22 +139,37 @@ export const parseTransferEvent = combineParsers({
   token_id: { index: 2, parser: parseU256 },
 });
 
-export type TransferEvent = ReturnType<typeof parseTransferEvent>["value"];
+const parseSwapParameters = combineParsers({
+  amount: { index: 0, parser: parseI129 },
+  is_token1: { index: 1, parser: parseBoolean },
+  sqrt_ratio_limit: { index: 2, parser: parseU256 },
+  skip_ahead: { index: 3, parser: parseU128 },
+});
 
-export type PoolKey = ReturnType<typeof parsePoolKey>["value"];
+export const parseSwappedEvent = combineParsers({
+  pool_key: { index: 0, parser: parsePoolKey },
+  params: { index: 1, parser: parseSwapParameters },
+  delta: { index: 2, parser: parseDelta },
+});
 
-export type Bounds = ReturnType<typeof parseBounds>["value"];
+export type TransferEvent = GetParserType<typeof parseTransferEvent>;
 
-export type PositionMintedEvent = ReturnType<
+export type SwappedEvent = GetParserType<typeof parseSwappedEvent>;
+
+export type PoolKey = GetParserType<typeof parsePoolKey>;
+
+export type Bounds = GetParserType<typeof parseBounds>;
+
+export type PositionMintedEvent = GetParserType<
   typeof parsePositionMintedEvent
->["value"];
+>;
 
-export type UpdatePositionParameters = ReturnType<
+export type UpdatePositionParameters = GetParserType<
   typeof parseUpdatePositionParams
->["value"];
+>;
 
-export type Delta = ReturnType<typeof parseDelta>["value"];
+export type Delta = GetParserType<typeof parseDelta>;
 
-export type PositionUpdatedEvent = ReturnType<
+export type PositionUpdatedEvent = GetParserType<
   typeof parsePositionUpdatedEvent
->["value"];
+>;

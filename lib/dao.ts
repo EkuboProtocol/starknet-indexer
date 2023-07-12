@@ -3,6 +3,7 @@ import {
   PoolKey,
   PositionMintedEvent,
   PositionUpdatedEvent,
+  SwappedEvent,
   TransferEvent,
 } from "./parse";
 import { BlockMeta } from "./processor";
@@ -84,6 +85,17 @@ export class EventDAO {
         
           -- pool stuff.
           key_hash text not null REFERENCES pool_keys(key_hash),
+        
+          -- validity range.
+          _valid int8range not null
+        )`),
+
+      this.pg.query(`create table if not exists swaps(
+          -- pool stuff.
+          key_hash text not null REFERENCES pool_keys(key_hash),
+          
+          delta0 numeric not null,
+          delta1 numeric not null,
         
           -- validity range.
           _valid int8range not null
@@ -225,6 +237,28 @@ export class EventDAO {
         event.delta.amount0,
         event.delta.amount1,
         key_hash,
+        `[${meta.blockNumber},)`,
+      ],
+    });
+  }
+
+  public async insertSwappedEvent(event: SwappedEvent, meta: BlockMeta) {
+    const key_hash = await this.insertKeyHash(event.pool_key);
+
+    await this.pg.query({
+      name: "insert-swapped",
+      text: `
+      INSERT INTO swaps (
+        key_hash,
+        delta0,
+        delta1,
+        _valid
+      ) values ($1, $2, $3, $4);
+      `,
+      values: [
+        key_hash,
+        event.delta.amount0,
+        event.delta.amount1,
         `[${meta.blockNumber},)`,
       ],
     });

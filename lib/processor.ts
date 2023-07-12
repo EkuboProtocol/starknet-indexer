@@ -1,4 +1,5 @@
 import { v1alpha2 as starknet } from "@apibara/starknet";
+import { Parser } from "./parse";
 
 export interface BlockMeta {
   blockNumber: number;
@@ -12,7 +13,7 @@ export interface EventProcessor<T> {
     fromAddress: starknet.IFieldElement;
   };
 
-  parser(ev: starknet.IEventWithTransaction): T;
+  parser: Parser<T>;
 
   handle(ev: T, meta: BlockMeta): Promise<void>;
 }
