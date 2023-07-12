@@ -6,21 +6,21 @@ import {
   SwappedEvent,
   TransferEvent,
 } from "./parse";
-import { BlockMeta } from "./processor";
-import { Cursor, v1alpha2 } from "@apibara/protocol";
-import { pedersen_from_hex, pedersen_from_dec } from "pedersen-fast";
-import { FieldElement } from "@apibara/starknet";
+import { pedersen_from_hex } from "pedersen-fast";
+import { EventKey } from "./processor";
 
-function computeKeyHash(pool_key: PositionMintedEvent["pool_key"]) {
-  return pedersen_from_hex(
+function computeKeyHash(pool_key: PositionMintedEvent["pool_key"]): bigint {
+  return BigInt(
     pedersen_from_hex(
-      pedersen_from_hex(pool_key.token0, pool_key.token1),
       pedersen_from_hex(
-        `0x${pool_key.fee.toString(16)}`,
-        `0x${pool_key.tick_spacing.toString(16)}`
-      )
-    ),
-    pool_key.extension
+        pedersen_from_hex(pool_key.token0, pool_key.token1),
+        pedersen_from_hex(
+          `0x${pool_key.fee.toString(16)}`,
+          `0x${pool_key.tick_spacing.toString(16)}`
+        )
+      ),
+      pool_key.extension
+    )
   );
 }
 
@@ -42,69 +42,82 @@ export class EventDAO {
 
   async connectAndInit() {
     await this.pg.connect();
+    await this.startTransaction();
     await this.initSchema();
+    const cursor = await this.loadCursor();
+    // we need to clear anything that was potentially inserted as pending before starting
+    if (cursor) {
+      await this.invalidateBlockNumber(BigInt(cursor.orderKey) + 1n);
+    }
+    await this.endTransaction();
+    return cursor;
   }
 
   private async initSchema(): Promise<void> {
-    await this.startTransaction();
     const result = await Promise.all([
-      this.pg.query(`create table if not exists cursor(
-          id int not null UNIQUE CHECK (id = 1), -- only one row.
-          order_key numeric not null,
-          unique_key text not null
+      this.pg.query(`CREATE TABLE IF NOT EXISTS cursor(
+        id INT NOT NULL UNIQUE CHECK (id = 1), -- only one row.
+        order_key NUMERIC NOT NULL,
+        unique_key TEXT NOT NULL
       )`),
 
-      this.pg.query(`create table if not exists pool_keys(
-          key_hash text not null PRIMARY KEY,
-          token0 text not null,
-          token1 text not null,
-          fee numeric not null,
-          tick_spacing numeric not null,
-          extension text not null
-        )`),
+      this.pg.query(`CREATE TABLE IF NOT EXISTS pool_keys(
+        key_hash NUMERIC NOT NULL PRIMARY KEY,
+        token0 NUMERIC NOT NULL,
+        token1 NUMERIC NOT NULL,
+        fee NUMERIC NOT NULL,
+        tick_spacing NUMERIC NOT NULL,
+        extension NUMERIC NOT NULL
+      )`),
 
-      this.pg.query(`create table if not exists position_metadata(
-          token_id numeric not null PRIMARY KEY,
-          lower_bound numeric not null,
-          upper_bound numeric not null,
+      this.pg.query(`CREATE TABLE IF NOT EXISTS position_metadata(
+        token_id NUMERIC NOT NULL PRIMARY KEY,
+        lower_bound NUMERIC NOT NULL,
+        upper_bound NUMERIC NOT NULL,
         
-          -- pool stuff.
-          key_hash text not null REFERENCES pool_keys(key_hash),
+        pool_key_hash NUMERIC NOT NULL REFERENCES pool_keys(key_hash),
+        
+        -- validity range.
+        _valid int8range NOT NULL
+      )`),
+
+      this.pg.query(`CREATE TABLE IF NOT EXISTS position_updates(
+        transaction_hash NUMERIC NOT NULL,
+        block_number INT8 NOT NULL,
+        index INT8 NOT NULL,
+    
+        pool_key_hash NUMERIC NOT NULL REFERENCES pool_keys(key_hash),
+    
+        salt NUMERIC NOT NULL,
+        lower_bound NUMERIC NOT NULL,
+        upper_bound NUMERIC NOT NULL,
+        
+        liquidity_delta NUMERIC NOT NULL,
+        delta0 NUMERIC NOT NULL,
+        delta1 NUMERIC NOT NULL,
+        
+        PRIMARY KEY (transaction_hash, block_number, index)
+      )`),
+
+      this.pg.query(`CREATE TABLE IF NOT EXISTS swaps(
+          transaction_hash NUMERIC NOT NULL,
+          block_number INT8 NOT NULL,
+          index INT8 NOT NULL,
           
-          -- validity range.
-          _valid int8range not null
-        )`),
-
-      this.pg.query(`create table if not exists position_updates(
-          salt numeric not null,
-          lower_bound numeric not null,
-          upper_bound numeric not null,
-          liquidity_delta numeric not null,
-          delta0 numeric not null,
-          delta1 numeric not null,
-        
-          -- pool stuff.
-          key_hash text not null REFERENCES pool_keys(key_hash),
-        
-          -- validity range.
-          _valid int8range not null
-        )`),
-
-      this.pg.query(`create table if not exists swaps(
-          -- pool stuff.
-          key_hash text not null REFERENCES pool_keys(key_hash),
+          pool_key_hash NUMERIC NOT NULL REFERENCES pool_keys(key_hash),
           
-          delta0 numeric not null,
-          delta1 numeric not null,
-        
-          -- validity range.
-          _valid int8range not null
-        )`),
+          delta0 NUMERIC NOT NULL,
+          delta1 NUMERIC NOT NULL,
+          
+          PRIMARY KEY (transaction_hash, block_number, index)
+        );`),
     ]);
-    await this.endTransaction();
   }
 
-  public async loadCursor() {
+  private async loadCursor(): Promise<{
+    orderKey: string;
+    uniqueKey: string;
+  } | null> {
     const { rows } = await this.pg.query({
       name: "load-cursor",
       text: `
@@ -112,17 +125,18 @@ export class EventDAO {
         `,
     });
     if (rows.length === 1) {
-      return Cursor.fromObject({
-        orderKey: rows[0].order_key,
-        uniqueKey: rows[0].unique_key,
-      });
+      const { order_key, unique_key } = rows[0];
+
+      return {
+        orderKey: `0x${BigInt(order_key).toString(16)}`,
+        uniqueKey: unique_key,
+      };
     } else {
       return null;
     }
   }
 
-  public async writeCursor(cursor: v1alpha2.ICursor) {
-    const stringified = Cursor.toObject(cursor);
+  public async writeCursor(cursor: { orderKey: string; uniqueKey: string }) {
     await this.pg.query({
       name: "write-cursor",
       text: `
@@ -130,7 +144,7 @@ export class EventDAO {
           VALUES (1, $1, $2)
           ON CONFLICT (id) DO UPDATE SET order_key = $1, unique_key = $2;
       `,
-      values: [Number(stringified.orderKey), stringified.uniqueKey],
+      values: [BigInt(cursor.orderKey), cursor.uniqueKey],
     });
   }
 
@@ -151,21 +165,21 @@ export class EventDAO {
       `,
       values: [
         key_hash,
-        pool_key.token0,
-        pool_key.token1,
+        BigInt(pool_key.token0),
+        BigInt(pool_key.token1),
         pool_key.fee,
         pool_key.tick_spacing,
-        pool_key.extension,
+        BigInt(pool_key.extension),
       ],
     });
     return key_hash;
   }
 
-  public async insertPositionMetadata(
+  public async setPositionMetadata(
     token: PositionMintedEvent,
-    meta: BlockMeta
+    blockNumber: bigint
   ) {
-    const key_hash = await this.insertKeyHash(token.pool_key);
+    const pool_key_hash = await this.insertKeyHash(token.pool_key);
 
     await this.pg.query({
       name: "insert-token",
@@ -174,27 +188,30 @@ export class EventDAO {
         token_id,
         lower_bound,
         upper_bound,
-        key_hash,
+        pool_key_hash,
         _valid
       ) values ($1, $2, $3, $4, $5) 
         ON CONFLICT (token_id)
             DO UPDATE 
             SET lower_bound = $2,
                 upper_bound = $3,
-                key_hash = $4,
+                pool_key_hash = $4,
                 _valid = $5
       `,
       values: [
         token.token_id,
         token.bounds.lower,
         token.bounds.upper,
-        key_hash,
-        `[${meta.blockNumber},)`,
+        pool_key_hash,
+        `[${blockNumber},)`,
       ],
     });
   }
 
-  public async deletePositionMetadata(token: TransferEvent, meta: BlockMeta) {
+  public async deletePositionMetadata(
+    token: TransferEvent,
+    blockNumber: bigint
+  ) {
     // The `*` operator is the PostgreSQL range intersection operator.
     await this.pg.query({
       name: "delete-token",
@@ -205,61 +222,79 @@ export class EventDAO {
       where
         token_id = $2;
       `,
-      values: [`[,${meta.blockNumber})`, token.token_id],
+      values: [`[,${blockNumber})`, token.token_id],
     });
   }
 
-  public async insertPositionUpdated(
+  public async insertPositionUpdatedEvent(
     event: PositionUpdatedEvent,
-    block: BlockMeta
+    key: EventKey
   ) {
-    const key_hash = await this.insertKeyHash(event.pool_key);
+    const pool_key_hash = await this.insertKeyHash(event.pool_key);
 
     await this.pg.query({
       name: "insert-position",
       text: `
       INSERT INTO position_updates (
+        transaction_hash,
+        block_number,
+        index,
+
+        pool_key_hash,
+
         salt,
         lower_bound,
         upper_bound,
+
         liquidity_delta,
         delta0,
-        delta1,
-        key_hash,
-        _valid
-      ) values ($1, $2, $3, $4, $5, $6, $7, $8::int8range);
+        delta1
+      ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10);
       `,
       values: [
+        key.txHash,
+        key.blockNumber,
+        key.logIndex,
+
+        pool_key_hash,
+
         event.params.salt,
         event.params.bounds.lower,
         event.params.bounds.upper,
+
         event.params.liquidity_delta,
         event.delta.amount0,
         event.delta.amount1,
-        key_hash,
-        `[${block.blockNumber},)`,
       ],
     });
   }
 
-  public async insertSwappedEvent(event: SwappedEvent, meta: BlockMeta) {
-    const key_hash = await this.insertKeyHash(event.pool_key);
+  public async insertSwappedEvent(event: SwappedEvent, key: EventKey) {
+    const pool_key_hash = await this.insertKeyHash(event.pool_key);
 
     await this.pg.query({
       name: "insert-swapped",
       text: `
       INSERT INTO swaps (
-        key_hash,
+        transaction_hash,
+        block_number,
+        index,
+
+        pool_key_hash,
+
         delta0,
-        delta1,
-        _valid
-      ) values ($1, $2, $3, $4);
+        delta1
+      ) values ($1, $2, $3, $4, $5, $6);
       `,
       values: [
-        key_hash,
+        key.txHash,
+        key.blockNumber,
+        key.logIndex,
+
+        pool_key_hash,
+
         event.delta.amount0,
         event.delta.amount1,
-        `[${meta.blockNumber},)`,
       ],
     });
   }
@@ -280,7 +315,7 @@ export class EventDAO {
       name: "update-upper-bounds",
       text: `
       UPDATE ${table}
-        SET _valid = int8range(LOWER(_valid), 'infinity'::int8)
+        SET _valid = int8range(LOWER(_valid), 'infinity'::INT8)
         WHERE UPPER(_valid) >= $1;
       `,
       values: [invalidatedBlockNumber],

@@ -1,13 +1,10 @@
 import { v1alpha2 as starknet } from "@apibara/starknet";
 import { Parser } from "./parse";
 
-export interface BlockMeta {
+export interface EventKey {
   blockNumber: bigint;
-  blockTimestamp: Date;
-}
-
-export interface TxMeta {
-  hash: string;
+  txHash: bigint;
+  logIndex: bigint;
 }
 
 export interface EventProcessor<T> {
@@ -18,5 +15,5 @@ export interface EventProcessor<T> {
 
   parser: Parser<T>;
 
-  handle(result: { parsed: T; tx: TxMeta; block: BlockMeta }): Promise<void>;
+  handle(result: { parsed: T; key: EventKey }): Promise<void>;
 }

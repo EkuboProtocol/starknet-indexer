@@ -17,7 +17,7 @@ import {
   SwappedEvent,
   TransferEvent,
 } from "./parse";
-import { BlockMeta, EventProcessor, TxMeta } from "./processor";
+import { EventProcessor } from "./processor";
 import { logger } from "./logger";
 import { EventDAO } from "./dao";
 import { Client } from "pg";
@@ -49,9 +49,9 @@ const EVENT_PROCESSORS = [
       ],
     },
     parser: parsePositionMintedEvent,
-    handle: async ({ tx, block, parsed }) => {
-      logger.debug("PositionMinted", { parsed, block, tx });
-      await dao.insertPositionMetadata(parsed, block);
+    handle: async ({ key, parsed }) => {
+      logger.debug("PositionMinted", { parsed, key });
+      await dao.setPositionMetadata(parsed, key.blockNumber);
     },
   },
   <EventProcessor<TransferEvent>>{
@@ -65,9 +65,11 @@ const EVENT_PROCESSORS = [
       ],
     },
     parser: parseTransferEvent,
-    async handle({ parsed, block, tx }): Promise<void> {
-      logger.debug("Position Burned", { parsed, block, tx });
-      await dao.deletePositionMetadata(parsed, block);
+    async handle({ parsed, key }): Promise<void> {
+      if (BigInt(parsed.to) === 0n) {
+        logger.debug("Position burned", { parsed, key });
+        await dao.deletePositionMetadata(parsed, key.blockNumber);
+      }
     },
   },
   <EventProcessor<PositionUpdatedEvent>>{
@@ -81,9 +83,9 @@ const EVENT_PROCESSORS = [
       ],
     },
     parser: parsePositionUpdatedEvent,
-    async handle({ tx, block, parsed }): Promise<void> {
-      logger.debug("PositionUpdated", { tx, block, parsed });
-      await dao.insertPositionUpdated(parsed, block);
+    async handle({ parsed, key }): Promise<void> {
+      logger.debug("PositionUpdated", { parsed, key });
+      await dao.insertPositionUpdatedEvent(parsed, key);
     },
   },
   <EventProcessor<SwappedEvent>>{
@@ -97,9 +99,9 @@ const EVENT_PROCESSORS = [
       ],
     },
     parser: parseSwappedEvent,
-    async handle({ parsed, block, tx }): Promise<void> {
-      logger.debug("Swapped Event", { parsed, block, tx });
-      await dao.insertSwappedEvent(parsed, block);
+    async handle({ parsed, key }): Promise<void> {
+      logger.debug("Swapped", { parsed, key });
+      await dao.insertSwappedEvent(parsed, key);
     },
   },
 ] as const;
@@ -111,16 +113,12 @@ const client = new StreamClient({
 
 (async function () {
   // first set up the schema
-  await dao.connectAndInit();
+  const databaseStartingCursor =
+    (await dao.connectAndInit()) ?? Cursor.toObject();
 
-  // then load the cursor
-  let cursor =
-    (await dao.loadCursor()) ??
-    StarkNetCursor.createWithBlockNumber(
-      Number(process.env.STARTING_CURSOR_BLOCK_NUMBER ?? 0)
-    );
-
-  logger.info(`Starting from cursor`, { cursor: Cursor.toObject(cursor) });
+  logger.info(`Loaded starting cursor`, {
+    startingCursor: databaseStartingCursor,
+  });
 
   client.configure({
     filter: EVENT_PROCESSORS.reduce((memo, value) => {
@@ -130,7 +128,11 @@ const client = new StreamClient({
     }, Filter.create().withHeader({ weak: true })).encode(),
     batchSize: 1,
     finality: v1alpha2.DataFinality.DATA_STATUS_PENDING,
-    cursor,
+    cursor: databaseStartingCursor
+      ? Cursor.fromObject(databaseStartingCursor)
+      : StarkNetCursor.createWithBlockNumber(
+          Number(process.env.STARTING_CURSOR_BLOCK_NUMBER ?? 0)
+        ),
   });
 
   for await (const message of client) {
@@ -151,58 +153,57 @@ const client = new StreamClient({
           for (const item of message.data.data) {
             const decoded = starknet.Block.decode(item);
 
-            const block: BlockMeta = {
-              blockNumber: parseLong(decoded.header.blockNumber),
-              blockTimestamp: new Date(
-                Number(parseLong(decoded.header.timestamp.seconds) * 1000n)
-              ),
-            };
+            const blockNumber = parseLong(decoded.header.blockNumber);
 
             const events = decoded.events;
 
             await dao.startTransaction();
-            await Promise.all(
-              EVENT_PROCESSORS.flatMap(({ parser, handle, filter }) => {
-                return events
-                  .filter((ev) => {
-                    return (
-                      FieldElement.toBigInt(ev.event.fromAddress) ===
-                        FieldElement.toBigInt(filter.fromAddress) &&
-                      ev.event.keys.length === filter.keys.length &&
-                      ev.event.keys.every(
-                        (key, ix) =>
-                          FieldElement.toBigInt(key) ===
-                          FieldElement.toBigInt(filter.keys[ix])
-                      )
-                    );
-                  })
-                  .map(({ event: { data, index }, transaction }) => ({
-                    parsed: parser(data, 0).value,
-                    tx: <TxMeta>{
-                      hash: FieldElement.toHex(transaction.meta.hash),
-                    },
-                  }))
 
-                  .map(({ parsed, tx }) =>
-                    // unavoidable `as any` because the parser type is a union of all the types
-                    handle({
+            for (const { event, transaction } of events) {
+              const txHash = FieldElement.toBigInt(transaction.meta.hash);
+
+              // process each event sequentially through all the event processors in parallel
+              // assumption is that none of the event processors operate on the same events, i.e. have the same filters
+              // this assumption could be validated at runtime
+              await Promise.all(
+                EVENT_PROCESSORS.map(async ({ parser, handle, filter }) => {
+                  if (
+                    FieldElement.toBigInt(event.fromAddress) ===
+                      FieldElement.toBigInt(filter.fromAddress) &&
+                    event.keys.length === filter.keys.length &&
+                    event.keys.every(
+                      (key, ix) =>
+                        FieldElement.toBigInt(key) ===
+                        FieldElement.toBigInt(filter.keys[ix])
+                    )
+                  ) {
+                    const parsed = parser(event.data, 0).value;
+
+                    await handle({
                       parsed: parsed as any,
-                      tx: tx,
-                      block: block,
-                    })
-                  );
-              })
-            );
-            await dao.writeCursor(message.data.cursor);
+                      key: {
+                        blockNumber,
+                        txHash,
+                        logIndex: parseLong(event.index),
+                      },
+                    });
+                  }
+                })
+              );
+            }
+
+            await dao.writeCursor(Cursor.toObject(message.data.cursor));
             await dao.endTransaction();
 
-            logger.info(`Processed block`, { block });
+            logger.info(`Processed block`, { blockNumber });
           }
         }
         break;
+
       case "heartbeat":
         logger.debug(`Heartbeat`);
         break;
+
       case "invalidate":
         let invalidatedCursor = Cursor.toObject(message.invalidate.cursor);
 
@@ -212,7 +213,7 @@ const client = new StreamClient({
 
         await dao.startTransaction();
         await dao.invalidateBlockNumber(BigInt(invalidatedCursor.orderKey));
-        await dao.writeCursor(message.invalidate.cursor);
+        await dao.writeCursor(Cursor.toObject(message.invalidate.cursor));
         await dao.endTransaction();
         break;
 
