@@ -116,7 +116,7 @@ const client = new StreamClient({
   const databaseStartingCursor =
     (await dao.connectAndInit()) ?? Cursor.toObject();
 
-  logger.info(`Loaded starting cursor`, {
+  logger.info(`Initialized`, {
     startingCursor: databaseStartingCursor,
   });
 
@@ -158,6 +158,8 @@ const client = new StreamClient({
             const events = decoded.events;
 
             await dao.startTransaction();
+
+            await dao.invalidateBlockNumber(blockNumber);
 
             for (const { event, transaction } of events) {
               const txHash = FieldElement.toBigInt(transaction.meta.hash);

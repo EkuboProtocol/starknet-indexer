@@ -128,7 +128,7 @@ export class EventDAO {
       const { order_key, unique_key } = rows[0];
 
       return {
-        orderKey: `0x${BigInt(order_key).toString(16)}`,
+        orderKey: order_key,
         uniqueKey: unique_key,
       };
     } else {
@@ -190,13 +190,7 @@ export class EventDAO {
         upper_bound,
         pool_key_hash,
         _valid
-      ) values ($1, $2, $3, $4, $5) 
-        ON CONFLICT (token_id)
-            DO UPDATE 
-            SET lower_bound = $2,
-                upper_bound = $3,
-                pool_key_hash = $4,
-                _valid = $5
+      ) values ($1, $2, $3, $4, $5); 
       `,
       values: [
         token.token_id,
