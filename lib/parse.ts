@@ -72,9 +72,9 @@ export function combineParsers<
     };
 }
 
-export const parseAddress: Parser<string> = (data, startingFrom) => {
+export const parseFelt252: Parser<bigint> = (data, startingFrom) => {
   return {
-    value: FieldElement.toHex(data[startingFrom]),
+    value: FieldElement.toBigInt(data[startingFrom]),
     next: startingFrom + 1,
   };
 };
@@ -98,11 +98,11 @@ export const parseBoolean: Parser<boolean> = (data, startingFrom) => {
 };
 
 export const parsePoolKey = combineParsers({
-  token0: { index: 0, parser: parseAddress },
-  token1: { index: 1, parser: parseAddress },
+  token0: { index: 0, parser: parseFelt252 },
+  token1: { index: 1, parser: parseFelt252 },
   fee: { index: 2, parser: parseU128 },
   tick_spacing: { index: 3, parser: parseU128 },
-  extension: { index: 4, parser: parseAddress },
+  extension: { index: 4, parser: parseFelt252 },
 });
 
 export const parseBounds = combineParsers({
@@ -134,8 +134,8 @@ export const parsePositionUpdatedEvent = combineParsers({
 });
 
 export const parseTransferEvent = combineParsers({
-  from: { index: 0, parser: parseAddress },
-  to: { index: 1, parser: parseAddress },
+  from: { index: 0, parser: parseFelt252 },
+  to: { index: 1, parser: parseFelt252 },
   token_id: { index: 2, parser: parseU256 },
 });
 

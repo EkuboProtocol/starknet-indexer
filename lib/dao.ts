@@ -9,17 +9,18 @@ import {
 import { pedersen_from_hex } from "pedersen-fast";
 import { EventKey } from "./processor";
 
+function toHex(x: bigint): string {
+  return `0x${x.toString(16)}`;
+}
+
 function computeKeyHash(pool_key: PositionMintedEvent["pool_key"]): bigint {
   return BigInt(
     pedersen_from_hex(
       pedersen_from_hex(
-        pedersen_from_hex(pool_key.token0, pool_key.token1),
-        pedersen_from_hex(
-          `0x${pool_key.fee.toString(16)}`,
-          `0x${pool_key.tick_spacing.toString(16)}`
-        )
+        pedersen_from_hex(toHex(pool_key.token0), toHex(pool_key.token1)),
+        pedersen_from_hex(toHex(pool_key.fee), toHex(pool_key.tick_spacing))
       ),
-      pool_key.extension
+      toHex(pool_key.extension)
     )
   );
 }
