@@ -211,7 +211,7 @@ export class EventDAO {
 
   public async insertPositionUpdated(
     event: PositionUpdatedEvent,
-    meta: BlockMeta
+    block: BlockMeta
   ) {
     const key_hash = await this.insertKeyHash(event.pool_key);
 
@@ -237,7 +237,7 @@ export class EventDAO {
         event.delta.amount0,
         event.delta.amount1,
         key_hash,
-        `[${meta.blockNumber},)`,
+        `[${block.blockNumber},)`,
       ],
     });
   }
@@ -293,5 +293,9 @@ export class EventDAO {
       this.invalidate("position_updates", invalidatedBlockNumber),
       this.invalidate("position_metadata", invalidatedBlockNumber),
     ]);
+  }
+
+  public async close() {
+    await this.pg.end();
   }
 }

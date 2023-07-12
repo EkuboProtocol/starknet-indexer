@@ -17,7 +17,7 @@ import {
   SwappedEvent,
   TransferEvent,
 } from "./parse";
-import { BlockMeta, EventProcessor } from "./processor";
+import { BlockMeta, EventProcessor, TxMeta } from "./processor";
 import { logger } from "./logger";
 import { EventDAO } from "./dao";
 import { Client } from "pg";
@@ -49,9 +49,9 @@ const EVENT_PROCESSORS = [
       ],
     },
     parser: parsePositionMintedEvent,
-    handle: async (ev, meta) => {
-      logger.debug("PositionMinted", { ev, meta });
-      await dao.insertPositionMetadata(ev, meta);
+    handle: async ({ tx, block, parsed }) => {
+      logger.debug("PositionMinted", { parsed, block, tx });
+      await dao.insertPositionMetadata(parsed, block);
     },
   },
   <EventProcessor<TransferEvent>>{
@@ -65,11 +65,9 @@ const EVENT_PROCESSORS = [
       ],
     },
     parser: parseTransferEvent,
-    async handle(ev: TransferEvent, meta): Promise<void> {
-      if (meta.isFinal && BigInt(ev.to) === 0n) {
-        logger.debug("Position Burned", { ev, meta });
-        await dao.deletePositionMetadata(ev, meta);
-      }
+    async handle({ parsed, block, tx }): Promise<void> {
+      logger.debug("Position Burned", { parsed, block, tx });
+      await dao.deletePositionMetadata(parsed, block);
     },
   },
   <EventProcessor<PositionUpdatedEvent>>{
@@ -83,11 +81,9 @@ const EVENT_PROCESSORS = [
       ],
     },
     parser: parsePositionUpdatedEvent,
-    async handle(ev: PositionUpdatedEvent, meta): Promise<void> {
-      logger.debug("PositionUpdated", { ev, meta });
-      if (meta.isFinal) {
-        await dao.insertPositionUpdated(ev, meta);
-      }
+    async handle({ tx, block, parsed }): Promise<void> {
+      logger.debug("PositionUpdated", { tx, block, parsed });
+      await dao.insertPositionUpdated(parsed, block);
     },
   },
   <EventProcessor<SwappedEvent>>{
@@ -101,11 +97,9 @@ const EVENT_PROCESSORS = [
       ],
     },
     parser: parseSwappedEvent,
-    async handle(ev: SwappedEvent, meta): Promise<void> {
-      if (meta.isFinal) {
-        logger.debug("Swapped Event", { ev, meta });
-        await dao.insertSwappedEvent(ev, meta);
-      }
+    async handle({ parsed, block, tx }): Promise<void> {
+      logger.debug("Swapped Event", { parsed, block, tx });
+      await dao.insertSwappedEvent(parsed, block);
     },
   },
 ] as const;
@@ -125,6 +119,8 @@ const client = new StreamClient({
     StarkNetCursor.createWithBlockNumber(
       Number(process.env.STARTING_CURSOR_BLOCK_NUMBER ?? 0)
     );
+
+  logger.info(`Starting from cursor`, { cursor: Cursor.toObject(cursor) });
 
   client.configure({
     filter: EVENT_PROCESSORS.reduce((memo, value) => {
@@ -153,47 +149,54 @@ const client = new StreamClient({
           break;
         } else {
           for (const item of message.data.data) {
-            const block = starknet.Block.decode(item);
+            const decoded = starknet.Block.decode(item);
 
-            const meta: BlockMeta = {
-              blockNumber: Number(parseLong(block.header.blockNumber)),
+            const block: BlockMeta = {
+              blockNumber: parseLong(decoded.header.blockNumber),
               blockTimestamp: new Date(
-                Number(parseLong(block.header.timestamp.seconds) * 1000n)
+                Number(parseLong(decoded.header.timestamp.seconds) * 1000n)
               ),
-              isFinal:
-                block.status ===
-                starknet.BlockStatus.BLOCK_STATUS_ACCEPTED_ON_L1,
             };
 
-            const events = block.events;
+            const events = decoded.events;
 
             await dao.startTransaction();
             await Promise.all(
               EVENT_PROCESSORS.flatMap(({ parser, handle, filter }) => {
-                return (
-                  events
-                    .filter((ev) => {
-                      return (
-                        FieldElement.toBigInt(ev.event.fromAddress) ===
-                          FieldElement.toBigInt(filter.fromAddress) &&
-                        ev.event.keys.length === filter.keys.length &&
-                        ev.event.keys.every(
-                          (key, ix) =>
-                            FieldElement.toBigInt(key) ===
-                            FieldElement.toBigInt(filter.keys[ix])
-                        )
-                      );
-                    })
-                    .map((ev) => parser(ev.event.data, 0).value)
+                return events
+                  .filter((ev) => {
+                    return (
+                      FieldElement.toBigInt(ev.event.fromAddress) ===
+                        FieldElement.toBigInt(filter.fromAddress) &&
+                      ev.event.keys.length === filter.keys.length &&
+                      ev.event.keys.every(
+                        (key, ix) =>
+                          FieldElement.toBigInt(key) ===
+                          FieldElement.toBigInt(filter.keys[ix])
+                      )
+                    );
+                  })
+                  .map(({ event: { data, index }, transaction }) => ({
+                    parsed: parser(data, 0).value,
+                    tx: <TxMeta>{
+                      hash: FieldElement.toHex(transaction.meta.hash),
+                    },
+                  }))
+
+                  .map(({ parsed, tx }) =>
                     // unavoidable `as any` because the parser type is a union of all the types
-                    .map((ev) => handle(ev as any, meta))
-                );
+                    handle({
+                      parsed: parsed as any,
+                      tx: tx,
+                      block: block,
+                    })
+                  );
               })
             );
             await dao.writeCursor(message.data.cursor);
             await dao.endTransaction();
 
-            logger.info(`Processed block`, { meta });
+            logger.info(`Processed block`, { block });
           }
         }
         break;
@@ -221,9 +224,11 @@ const client = new StreamClient({
 })()
   .then(() => {
     logger.info("Stream closed gracefully");
-    process.exit(1);
   })
   .catch((error) => {
-    logger.error("Stream crashed", { error });
+    logger.error(error);
+  })
+  .finally(async () => {
+    await dao.close();
     process.exit(1);
   });
