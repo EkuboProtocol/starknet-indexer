@@ -26,6 +26,11 @@ const dao = new EventDAO(
     host: process.env.PGHOST,
     port: Number(process.env.PGPORT),
     database: process.env.PGDATABASE,
+    ssl: process.env.PGCERT
+      ? {
+          ca: process.env.PGCERT,
+        }
+      : false,
   })
 );
 
@@ -161,6 +166,8 @@ const client = new StreamClient({
             );
             await dao.writeCursor(message.data.cursor);
             await dao.endTransaction();
+
+            logger.info(`Processed block`, { meta });
           }
         }
         break;
