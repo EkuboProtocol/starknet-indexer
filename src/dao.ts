@@ -667,27 +667,23 @@ export class DAO {
                                                    FROM points_from_mints
                                                    UNION ALL
                                                    SELECT points_earned_timestamp, collector, referrer, points
-                                                   FROM position_from_withdrawal_fees_paid),
-             points_no_referrer AS (SELECT points_earned_timestamp, collector, points
-                                    FROM points_by_collector_with_referrer
-                                    UNION ALL
-                                    SELECT points_earned_timestamp, referrer AS collector, points / 5
-                                    FROM points_by_collector_with_referrer
-                                    WHERE referrer IS NOT NULL)
+                                                   FROM position_from_withdrawal_fees_paid)
         SELECT date_bin(INTERVAL '1 day', points_earned_timestamp, '2000-01-01') AS points_earned_day,
                collector,
+               referrer,
                SUM(points)                                                       AS points
-        FROM points_no_referrer
-        GROUP BY points_earned_day, collector
+        FROM points_by_collector_with_referrer
+        GROUP BY points_earned_day, collector, referrer
             );
 
-
-        CREATE MATERIALIZED VIEW IF NOT EXISTS leaderboard_materialized AS
+        CREATE TABLE IF NOT EXISTS leaderboard
         (
-        SELECT points_earned_day, collector, points
-        FROM leaderboard_view);
-
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_leaderboard_materialized_points_earned_day_collector ON leaderboard_materialized USING btree (points_earned_day, collector);
+            points_earned_day timestamptz NOT NULL,
+            collector         NUMERIC     NOT NULL,
+            referrer          NUMERIC     NOT NULL,
+            points            BIGINT      NOT NULL,
+            PRIMARY KEY (points_earned_day, collector, referrer)
+        );
     `);
   }
 
@@ -696,7 +692,6 @@ export class DAO {
       REFRESH MATERIALIZED VIEW CONCURRENTLY volume_by_token_by_hour_by_key_hash_materialized;
       REFRESH MATERIALIZED VIEW CONCURRENTLY tvl_delta_by_token_by_hour_by_key_hash_materialized;
       REFRESH MATERIALIZED VIEW CONCURRENTLY pair_vwap_preimages_materialized;
-      REFRESH MATERIALIZED VIEW CONCURRENTLY leaderboard_materialized;
     `);
   }
 
