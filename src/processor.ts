@@ -3,7 +3,7 @@ import { Parser } from "./parse";
 import { DAO } from "./dao";
 
 export interface EventKey {
-  blockNumber: bigint;
+  blockNumber: number;
   transactionHash: bigint;
   transactionIndex: number;
   eventIndex: number;

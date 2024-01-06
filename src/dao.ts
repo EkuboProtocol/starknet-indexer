@@ -63,7 +63,7 @@ export class DAO {
     const cursor = await this.loadCursor();
     // we need to clear anything that was potentially inserted as pending before starting
     if (cursor) {
-      await this.deleteOldBlockNumbers(BigInt(cursor.orderKey) + 1n);
+      await this.deleteOldBlockNumbers(Number(cursor.orderKey) + 1);
     }
     await this.commitTransaction();
     return cursor;
@@ -1232,7 +1232,28 @@ export class DAO {
     });
   }
 
-  public async deleteOldBlockNumbers(invalidatedBlockNumber: bigint) {
+  public refreshLeaderboard(atBlockNumber: number) {
+    // todo: use atBlockNumber to limit the leaderboard refresh to not include data after that block
+    return this.pg.query(`DELETE
+                          FROM leaderboard;
+    INSERT INTO leaderboard(SELECT points_earned_day,
+                                   collector,
+                                   COALESCE(referrer, 0) AS referrer,
+                                   points
+                            FROM leaderboard_view);`);
+  }
+  public deleteFakeLeaderboardEvents(blockNumber: number) {
+    return this.pg.query({
+      text: `DELETE FROM event_keys WHERE block_number = $1 AND transaction_hash = 0`,
+      values: [blockNumber],
+    });
+  }
+
+  /**
+   * Deletes all the blocks equal to or greater than the given block number, cascades to all the other tables.
+   * @param invalidatedBlockNumber the block number for which data in the database should be removed
+   */
+  public async deleteOldBlockNumbers(invalidatedBlockNumber: number) {
     const { rowCount } = await this.pg.query({
       text: `
                 DELETE

@@ -13,6 +13,12 @@ import { Pool } from "pg";
 import { throttle } from "tadaaa";
 import { positionsContract } from "./positions";
 import { EVENT_PROCESSORS } from "./EVENT_PROCESSORS";
+import PQueue from "p-queue-cjs";
+import {
+  FeesPaidEvent,
+  FeesWithdrawnEvent,
+  PositionFeesCollectedEvent,
+} from "./events/core";
 
 const pool = new Pool({
   connectionString: process.env.PG_CONNECTION_STRING,
@@ -60,12 +66,21 @@ const refreshLeaderboard = throttle(
     const client = await pool.connect();
 
     const {
-      rows: [{ id: latestEventId, block_number: blockNumber }],
+      rows: [
+        {
+          id: latestEventId,
+          block_number: blockNumber,
+          transaction_index,
+          event_index,
+        },
+      ],
     } = await client.query<{
       id: string;
       block_number: number;
+      transaction_index: number;
+      event_index: number;
     }>(`
-            SELECT id, block_number
+            SELECT id, block_number, transaction_index, event_index
             FROM event_keys
             WHERE block_number != (SELECT block_number FROM event_keys ORDER BY id DESC LIMIT 1)
             ORDER BY id DESC
@@ -115,7 +130,7 @@ const refreshLeaderboard = throttle(
       `Getting position information for ${positions.length} positions`
     );
 
-    const CHUNK_SIZE = 100;
+    const CHUNK_SIZE = 200;
 
     const chunks = Array(Math.ceil(positions.length / CHUNK_SIZE))
       .fill(null)
@@ -138,42 +153,135 @@ const refreshLeaderboard = throttle(
           }));
       });
 
-    logger.debug(`Leaderboard query needs ${chunks.length} chunks`);
+    logger.info(
+      `Leaderboard query needs ${chunks.length} chunks at block number ${blockNumber}`
+    );
 
-    let allResults: {}[] = [];
+    const queue = new PQueue({ concurrency: 20 });
 
-    const RPC_BATCH_SIZE = 100;
+    const allResults = await Promise.all(
+      chunks.map((chunk, ix) =>
+        queue.add(() => {
+          logger.info("Loading chunk for leaderboard", {
+            chunkIndex: ix,
+          });
+          return positionsContract.call("get_tokens_info", [chunk], {
+            blockIdentifier: blockNumber,
+          });
+        })
+      )
+    );
 
-    for (let i = 0; i < chunks.length; i += RPC_BATCH_SIZE) {
-      allResults = allResults.concat(
-        ...(await Promise.all(
-          Array(RPC_BATCH_SIZE)
-            .fill(null)
-            .map((_, ix) =>
-              positionsContract.call("get_tokens_info", [chunks[i + ix]], {
-                blockIdentifier: blockNumber,
-              })
-            )
-        ))
-      );
-      logger.debug(`Fetched chunk ${i}-${i + RPC_BATCH_SIZE}`);
-    }
+    logger.info(`State fetched, starting leaderboard table refresh`);
 
-    logger.debug(`Starting leaderboard table refresh`);
+    const transactionIndex = transaction_index + 1;
+    const transactionHash = 0n;
+    let nextEventIndex = 0;
 
-    await client.query({
-      text: `
-        BEGIN;
-        DELETE
-        FROM leaderboard;
-        INSERT INTO leaderboard(SELECT points_earned_day,
-                                       collector,
-                                       COALESCE(referrer, 0) AS referrer,
-                                       points
-                                FROM leaderboard_view);
-        COMMIT;`,
-      values: [],
-    });
+    const { feeWithdrawnEvents, protocolFeesPaidEvents } = allResults.reduce<{
+      feeWithdrawnEvents: {
+        event: PositionFeesCollectedEvent;
+        key: EventKey;
+      }[];
+      protocolFeesPaidEvents: { event: FeesPaidEvent; key: EventKey }[];
+    }>(
+      (
+        memo,
+        {
+          fees0,
+          fees1,
+          amount0,
+          amount1,
+        }: {
+          amount0: bigint;
+          amount1: bigint;
+          fees0: bigint;
+          fees1: bigint;
+        },
+        ix
+      ) => {
+        const position = positions[ix];
+        const pool_key = {
+          token0: BigInt(position.token0),
+          token1: BigInt(position.token1),
+          fee: BigInt(position.fee),
+          tick_spacing: BigInt(position.tick_spacing),
+          extension: BigInt(position.extension),
+        };
+        const position_key = {
+          bounds: {
+            lower: BigInt(position.lower_bound),
+            upper: BigInt(position.lower_bound),
+          },
+          owner: BigInt(positionsContract.address),
+          salt: BigInt(position.token_id),
+        };
+        if (fees0 > 0n || fees1 > 0n) {
+          memo.feeWithdrawnEvents.push({
+            event: {
+              pool_key,
+              position_key,
+              delta: {
+                amount0: fees0,
+                amount1: fees1,
+              },
+            },
+
+            key: {
+              transactionIndex,
+              blockNumber,
+              transactionHash,
+              eventIndex: nextEventIndex++,
+            },
+          });
+        }
+        if (amount0 > 0n || amount1 > 0n) {
+          memo.protocolFeesPaidEvents.push({
+            event: {
+              pool_key,
+              position_key,
+              delta: {
+                amount0: (amount0 * pool_key.fee) / (1n << 128n),
+                amount1: (amount1 * pool_key.fee) / (1n << 128n),
+              },
+            },
+            key: {
+              transactionIndex,
+              blockNumber,
+              transactionHash,
+              eventIndex: nextEventIndex++,
+            },
+          });
+        }
+        return memo;
+      },
+      {
+        feeWithdrawnEvents: [],
+        protocolFeesPaidEvents: [],
+      }
+    );
+
+    const dao = new DAO(client);
+
+    await dao.beginTransaction();
+
+    await Promise.all(
+      feeWithdrawnEvents
+        .map(({ event, key }) =>
+          dao.insertPositionFeesCollectedEvent(event, key)
+        )
+        .concat(
+          protocolFeesPaidEvents.map(({ event, key }) =>
+            dao.insertProtocolFeesPaid(event, key)
+          )
+        )
+    );
+
+    await dao.refreshLeaderboard(blockNumber);
+
+    await dao.deleteFakeLeaderboardEvents(blockNumber);
+
+    await dao.commitTransaction();
 
     client.release();
 
@@ -251,7 +359,7 @@ const refreshLeaderboard = throttle(
           for (const encodedBlockData of message.data.data) {
             const block = starknet.Block.decode(encodedBlockData);
 
-            const blockNumber = parseLong(block.header.blockNumber);
+            const blockNumber = Number(parseLong(block.header.blockNumber));
             deletedCount += await dao.deleteOldBlockNumbers(blockNumber);
 
             // for pending blocks we update operational materialized views before we commit
@@ -361,9 +469,7 @@ const refreshLeaderboard = throttle(
         const dao = new DAO(client);
 
         await dao.beginTransaction();
-        await dao.deleteOldBlockNumbers(
-          BigInt(invalidatedCursor.orderKey) + 1n
-        );
+        await dao.deleteOldBlockNumbers(Number(invalidatedCursor.orderKey) + 1);
         await dao.writeCursor(Cursor.toObject(message.invalidate.cursor));
         await dao.commitTransaction();
 
