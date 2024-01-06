@@ -57,6 +57,8 @@ const refreshAnalyticalViews = throttle(
   }
 );
 
+const MAX_POSTGRES_SMALLINT = 32767;
+
 const refreshLeaderboard = throttle(
   async function () {
     const start = process.hrtime.bigint();
@@ -67,20 +69,14 @@ const refreshLeaderboard = throttle(
 
     const {
       rows: [
-        {
-          id: latestEventId,
-          block_number: blockNumber,
-          transaction_index,
-          event_index,
-        },
+        { id: latestEventId, block_number: blockNumber, transaction_index },
       ],
     } = await client.query<{
       id: string;
       block_number: number;
       transaction_index: number;
-      event_index: number;
     }>(`
-            SELECT id, block_number, transaction_index, event_index
+            SELECT id, block_number, transaction_index
             FROM event_keys
             WHERE block_number != (SELECT block_number FROM event_keys ORDER BY id DESC LIMIT 1)
             ORDER BY id DESC
@@ -159,10 +155,10 @@ const refreshLeaderboard = throttle(
 
     const queue = new PQueue({ concurrency: 20 });
 
-    const allResults = await Promise.all(
+    const allPositionTokenInfos = await Promise.all(
       chunks.map((chunk, ix) =>
         queue.add(() => {
-          logger.info("Loading chunk for leaderboard", {
+          logger.debug("Loading chunk for leaderboard", {
             chunkIndex: ix,
           });
           return positionsContract.call("get_tokens_info", [chunk], {
@@ -172,94 +168,97 @@ const refreshLeaderboard = throttle(
       )
     );
 
-    logger.info(`State fetched, starting leaderboard table refresh`);
+    logger.info(`Positions state fetched, starting leaderboard table refresh`);
 
-    const transactionIndex = transaction_index + 1;
-    const transactionHash = 0n;
-    let nextEventIndex = 0;
-
-    const { feeWithdrawnEvents, protocolFeesPaidEvents } = allResults.reduce<{
-      feeWithdrawnEvents: {
-        event: PositionFeesCollectedEvent;
-        key: EventKey;
-      }[];
-      protocolFeesPaidEvents: { event: FeesPaidEvent; key: EventKey }[];
-    }>(
-      (
-        memo,
-        {
-          fees0,
-          fees1,
-          amount0,
-          amount1,
-        }: {
-          amount0: bigint;
-          amount1: bigint;
-          fees0: bigint;
-          fees1: bigint;
-        },
-        ix
-      ) => {
-        const position = positions[ix];
-        const pool_key = {
-          token0: BigInt(position.token0),
-          token1: BigInt(position.token1),
-          fee: BigInt(position.fee),
-          tick_spacing: BigInt(position.tick_spacing),
-          extension: BigInt(position.extension),
-        };
-        const position_key = {
-          bounds: {
-            lower: BigInt(position.lower_bound),
-            upper: BigInt(position.lower_bound),
+    const { feeWithdrawnEvents, protocolFeesPaidEvents } =
+      allPositionTokenInfos.reduce<{
+        feeWithdrawnEvents: PositionFeesCollectedEvent[];
+        protocolFeesPaidEvents: FeesPaidEvent[];
+      }>(
+        (
+          memo,
+          {
+            fees0,
+            fees1,
+            amount0,
+            amount1,
+          }: {
+            amount0: bigint;
+            amount1: bigint;
+            fees0: bigint;
+            fees1: bigint;
           },
-          owner: BigInt(positionsContract.address),
-          salt: BigInt(position.token_id),
-        };
-        if (fees0 > 0n || fees1 > 0n) {
-          memo.feeWithdrawnEvents.push({
-            event: {
+          ix
+        ) => {
+          const position = positions[ix];
+          const pool_key = {
+            token0: BigInt(position.token0),
+            token1: BigInt(position.token1),
+            fee: BigInt(position.fee),
+            tick_spacing: BigInt(position.tick_spacing),
+            extension: BigInt(position.extension),
+          };
+          const position_key = {
+            bounds: {
+              lower: BigInt(position.lower_bound),
+              upper: BigInt(position.lower_bound),
+            },
+            owner: BigInt(positionsContract.address),
+            salt: BigInt(position.token_id),
+          };
+
+          if (fees0 > 0n || fees1 > 0n) {
+            memo.feeWithdrawnEvents.push({
               pool_key,
               position_key,
               delta: {
                 amount0: fees0,
                 amount1: fees1,
               },
-            },
+            });
+          }
 
-            key: {
-              transactionIndex,
-              blockNumber,
-              transactionHash,
-              eventIndex: nextEventIndex++,
-            },
-          });
+          if (amount0 > 0n || amount1 > 0n) {
+            const protocolFees0 = (amount0 * pool_key.fee) / (1n << 128n);
+            const protocolFees1 = (amount1 * pool_key.fee) / (1n << 128n);
+            if (protocolFees0 > 0n || protocolFees1 > 0n)
+              memo.protocolFeesPaidEvents.push({
+                pool_key,
+                position_key,
+                delta: {
+                  amount0: protocolFees0,
+                  amount1: protocolFees1,
+                },
+              });
+          }
+          return memo;
+        },
+        {
+          feeWithdrawnEvents: [],
+          protocolFeesPaidEvents: [],
         }
-        if (amount0 > 0n || amount1 > 0n) {
-          memo.protocolFeesPaidEvents.push({
-            event: {
-              pool_key,
-              position_key,
-              delta: {
-                amount0: (amount0 * pool_key.fee) / (1n << 128n),
-                amount1: (amount1 * pool_key.fee) / (1n << 128n),
-              },
-            },
-            key: {
-              transactionIndex,
-              blockNumber,
-              transactionHash,
-              eventIndex: nextEventIndex++,
-            },
-          });
-        }
-        return memo;
-      },
-      {
-        feeWithdrawnEvents: [],
-        protocolFeesPaidEvents: [],
+      );
+
+    const transactionHash = 0n;
+
+    let transactionIndex = transaction_index + 1;
+    let nextEventIndex = 0;
+
+    function nextEventKey() {
+      if (nextEventIndex >= MAX_POSTGRES_SMALLINT) {
+        nextEventIndex = 0;
+        transactionIndex++;
       }
-    );
+      if (transactionIndex >= MAX_POSTGRES_SMALLINT) {
+        throw new Error("Event key too large");
+      }
+      return {
+        transactionIndex,
+        blockNumber,
+        transactionHash,
+        eventIndex: nextEventIndex++,
+      };
+    }
 
     const dao = new DAO(client);
 
@@ -267,12 +266,12 @@ const refreshLeaderboard = throttle(
 
     await Promise.all(
       feeWithdrawnEvents
-        .map(({ event, key }) =>
-          dao.insertPositionFeesCollectedEvent(event, key)
+        .map((event) =>
+          dao.insertPositionFeesCollectedEvent(event, nextEventKey())
         )
         .concat(
-          protocolFeesPaidEvents.map(({ event, key }) =>
-            dao.insertProtocolFeesPaid(event, key)
+          protocolFeesPaidEvents.map((event) =>
+            dao.insertProtocolFeesPaid(event, nextEventKey())
           )
         )
     );
