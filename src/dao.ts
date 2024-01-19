@@ -1014,6 +1014,13 @@ export class DAO {
                                                AND s.delta1 != 0
                                              GROUP BY s.pool_key_hash, day),
 
+                                     pool_key_num_depositors_multiplier AS (SELECT pool_key_hash,
+                                                                                   (3::NUMERIC / (1 + EXP(-0.001 * COUNT(DISTINCT pt.to_address)))) AS multiplier
+                                                                            FROM position_transfers AS pt
+                                                                                     JOIN position_updates AS pu ON pt.token_id::NUMERIC = pu.salt
+                                                                            WHERE pt.from_address = 0
+                                                                            GROUP BY pu.pool_key_hash),
+
                                      swap_counts_as_t0 AS (SELECT token0 AS token, SUM(swap_count) AS swap_count
                                                            FROM pair_swap_counts_by_day AS pscbd
                                                                     JOIN pool_keys AS pk ON pscbd.pool_key_hash = pk.key_hash
@@ -1036,10 +1043,13 @@ export class DAO {
                                                                           swap_counts_as_t1 AS s1 ON at.token = s1.token),
 
                                      -- this boost allows users to earn more points by depositing liquidity in pools that are heavily utilized
-                                     pair_points_boost AS (SELECT pool_key_hash,
-                                                                  (20::NUMERIC / (1 + EXP(-0.0001 * SUM(swap_count)))) - 10 AS multiplier
-                                                           FROM pair_swap_counts_by_day
-                                                           GROUP BY pool_key_hash),
+                                     pair_points_boost AS (SELECT ps.pool_key_hash,
+                                                                  ((20::NUMERIC / (1 + EXP(-0.0001 * SUM(swap_count)))) - 10) *
+                                                                  pd.multiplier AS multiplier
+                                                           FROM pair_swap_counts_by_day AS ps
+                                                                    JOIN pool_key_num_depositors_multiplier AS pd
+                                                                         ON ps.pool_key_hash = pd.pool_key_hash
+                                                           GROUP BY ps.pool_key_hash),
 
                                      fee_to_discount_factor AS (SELECT DISTINCT fee,
                                                                                 1 - SQRT(fee / 340282366920938463463374607431768211456) AS fee_discount
@@ -1128,8 +1138,6 @@ export class DAO {
                                                                                    JOIN blocks AS pfpb
                                                                                         ON pfpek.block_number = pfpb.number
                                                                                    JOIN pool_keys AS pk ON pfp.pool_key_hash = pk.key_hash
-                                                                                   LEFT JOIN pair_points_boost AS ppb
-                                                                                             ON pfp.pool_key_hash = ppb.pool_key_hash
                                                                                    JOIN token_points_rates AS tp0 ON tp0.token = pk.token0
                                                                                    JOIN token_points_rates AS tp1 ON tp1.token = pk.token1
                                                                                    JOIN fee_to_discount_factor AS fd ON pk.fee = fd.fee),
