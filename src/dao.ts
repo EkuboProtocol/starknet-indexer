@@ -1035,7 +1035,7 @@ export class DAO {
                                              GROUP BY s.pool_key_hash, day),
 
                                      pool_key_num_depositors_multiplier AS (SELECT pool_key_hash,
-                                                                                   (3::NUMERIC / (1 + EXP(-0.001 * COUNT(DISTINCT pt.to_address)))) AS multiplier
+                                                                                   (4::NUMERIC / (1 + EXP(-0.001 * COUNT(DISTINCT pt.to_address)))) - 2 AS multiplier
                                                                             FROM position_transfers AS pt
                                                                                      JOIN position_updates AS pu ON pt.token_id::NUMERIC = pu.salt
                                                                             WHERE pt.from_address = 0
