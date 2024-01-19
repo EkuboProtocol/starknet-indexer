@@ -1170,7 +1170,7 @@ export class DAO {
                                                                                (pfc.delta0 * tp0.rate * fd.fee_discount) +
                                                                                (pfc.delta1 * tp1.rate * fd.fee_discount)
                                                                        ) * position_id_multiplier.multiplier *
-                                                                       ppb.multiplier
+                                                                       ppb.multiplier *
                                                                        ppd.multiplier /
                                                                        1e12::NUMERIC)::int8      AS points
                                                           FROM position_multipliers AS position_id_multiplier
