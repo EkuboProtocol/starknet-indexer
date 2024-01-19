@@ -1159,22 +1159,24 @@ export class DAO {
                                                                                    JOIN token_points_rates AS tp1 ON tp1.token = pk.token1
                                                                                    JOIN fee_to_discount_factor AS fd ON pk.fee = fd.fee),
 
-                                     points_from_fees AS (SELECT multipliers.token_id       AS token_id,
+                                     points_from_fees AS (SELECT position_id_multiplier.token_id AS token_id,
                                                                  (SELECT to_address
                                                                   FROM position_transfers AS pt
                                                                   WHERE pt.token_id = pfc.salt::BIGINT
                                                                     AND pt.event_id < pfc.event_id
                                                                   ORDER BY pt.event_id DESC
-                                                                  LIMIT 1)                  AS collector,
+                                                                  LIMIT 1)                       AS collector,
                                                                  FLOOR(ABS(
                                                                                (pfc.delta0 * tp0.rate * fd.fee_discount) +
                                                                                (pfc.delta1 * tp1.rate * fd.fee_discount)
-                                                                       ) * multipliers.multiplier /
-                                                                       1e12::NUMERIC)::int8 AS points
-                                                          FROM position_multipliers AS multipliers
+                                                                       ) * position_id_multiplier.multiplier *
+                                                                       ppb.multiplier
+                                                                       ppd.multiplier /
+                                                                       1e12::NUMERIC)::int8      AS points
+                                                          FROM position_multipliers AS position_id_multiplier
                                                                    JOIN position_fees_collected AS pfc
                                                                         ON pfc.salt =
-                                                                           multipliers.token_id::NUMERIC AND
+                                                                           position_id_multiplier.token_id::NUMERIC AND
                                                                            pfc.event_id <
                                                                            ${maxEventIdExclusive}
                                                                    JOIN event_keys AS pfek ON pfc.event_id = pfek.id
