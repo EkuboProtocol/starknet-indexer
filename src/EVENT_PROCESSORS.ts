@@ -26,6 +26,14 @@ import {
   parsePositionMintedWithReferrerEvent,
   PositionMintedWithReferrer,
 } from "./events/positions";
+import {
+  OrderUpdatedEvent,
+  parseOrderUpdated,
+  OrderProceedsWithdrawnEvent,
+  parseOrderProceedsWithdrawn,
+  VirtualOrdersExecutedEvent,
+  parseVirtualOrdersExecuted
+} from "./events/twamm";
 
 export const EVENT_PROCESSORS = [
   <EventProcessor<LegacyPositionMintedEvent>>{
@@ -222,6 +230,60 @@ export const EVENT_PROCESSORS = [
     async handle(dao, { parsed, key }): Promise<void> {
       logger.debug("Registration V2", { parsed, key });
       await dao.insertRegistration(parsed, key);
+    },
+  },
+  <EventProcessor<OrderUpdatedEvent>>{
+    filter: {
+      fromAddress: FieldElement.fromBigInt(
+        process.env.TWAMM_ADDRESS
+      ),
+      keys: [
+        // OrderUpdated
+        FieldElement.fromBigInt(
+          0xb670ed7b7ee8ccb350963a7dea39493daff6e7a43ab021a0e4ac2d652d359en
+        ),
+      ],
+    },
+    parser: parseOrderUpdated,
+    async handle(dao, { parsed, key }): Promise<void> {
+      logger.debug("OrderUpdated", { parsed, key });
+      await dao.insertTWAMMOrderUpdatedEvent(parsed, key);
+    },
+  },
+  <EventProcessor<OrderProceedsWithdrawnEvent>>{
+    filter: {
+      fromAddress: FieldElement.fromBigInt(
+        process.env.TWAMM_ADDRESS
+      ),
+      keys: [
+        // OrderProceedsWithdrawn
+        FieldElement.fromBigInt(
+          0x3e074150c5906b2e323cea942b41f67f3639fcae5dc1fe4cf19c6801dff89b5n
+        ),
+      ],
+    },
+    parser: parseOrderProceedsWithdrawn,
+    async handle(dao, { parsed, key }): Promise<void> {
+      logger.debug("OrderProceedsWithdrawn", { parsed, key });
+      await dao.insertTWAMMOrderProceedsWithdrawnEvent(parsed, key);
+    },
+  },
+  <EventProcessor<VirtualOrdersExecutedEvent>>{
+    filter: {
+      fromAddress: FieldElement.fromBigInt(
+        process.env.TWAMM_ADDRESS
+      ),
+      keys: [
+        // VirtualOrdersExecuted
+        FieldElement.fromBigInt(
+          0x29416aa69fb4a5270dd3c2b3e6d05f457dc0dbf96f423db1f86c5b7b2e6840fn
+        ),
+      ],
+    },
+    parser: parseVirtualOrdersExecuted,
+    async handle(dao, { parsed, key }): Promise<void> {
+      logger.debug("VirtualOrdersExecuted", { parsed, key });
+      await dao.insertTWAMMVirtualOrdersExecutedEvent(parsed, key);
     },
   },
 ] as const;
