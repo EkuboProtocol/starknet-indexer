@@ -803,7 +803,7 @@ export class DAO {
     });
   }
 
-  private async insertKeyHash(pool_key: PoolKey) {
+  private async insertPoolKeyHash(pool_key: PoolKey) {
     const key_hash = computeKeyHash(pool_key);
 
     await this.pg.query({
@@ -893,7 +893,7 @@ export class DAO {
     event: PositionUpdatedEvent,
     key: EventKey
   ) {
-    const pool_key_hash = await this.insertKeyHash(event.pool_key);
+    const pool_key_hash = await this.insertPoolKeyHash(event.pool_key);
 
     await this.pg.query({
       text: `
@@ -939,7 +939,7 @@ export class DAO {
     event: PositionFeesCollectedEvent,
     key: EventKey
   ) {
-    const pool_key_hash = await this.insertKeyHash(event.pool_key);
+    const pool_key_hash = await this.insertPoolKeyHash(event.pool_key);
 
     await this.pg.query({
       name: "insert-position-fees-collected",
@@ -983,7 +983,7 @@ export class DAO {
     event: PoolInitializationEvent,
     key: EventKey
   ) {
-    const pool_key_hash = await this.insertKeyHash(event.pool_key);
+    const pool_key_hash = await this.insertPoolKeyHash(event.pool_key);
 
     await this.pg.query({
       text: `
@@ -1049,7 +1049,7 @@ export class DAO {
     event: ProtocolFeesPaidEvent,
     key: EventKey
   ) {
-    const pool_key_hash = await this.insertKeyHash(event.pool_key);
+    const pool_key_hash = await this.insertPoolKeyHash(event.pool_key);
 
     await this.pg.query({
       name: "insert-protocol-fees-paid",
@@ -1093,7 +1093,7 @@ export class DAO {
     event: FeesAccumulatedEvent,
     key: EventKey
   ) {
-    const pool_key_hash = await this.insertKeyHash(event.pool_key);
+    const pool_key_hash = await this.insertPoolKeyHash(event.pool_key);
 
     await this.pg.query({
       text: `
@@ -1159,7 +1159,7 @@ export class DAO {
   }
 
   public async insertSwappedEvent(event: SwappedEvent, key: EventKey) {
-    const pool_key_hash = await this.insertKeyHash(event.pool_key);
+    const pool_key_hash = await this.insertPoolKeyHash(event.pool_key);
 
     await this.pg.query({
       text: `
@@ -1463,7 +1463,7 @@ export class DAO {
   ) {
     const { order_key } = order_updated;
 
-    const key_hash = await this.insertKeyHash(this.orderKeyToPoolKey(order_key));
+    const key_hash = await this.insertPoolKeyHash(this.orderKeyToPoolKey(order_key));
 
     const [sale_rate_delta0, sale_rate_delta1] = order_key.sell_token > order_key.buy_token ?
       [0, order_updated.sale_rate_delta] : [order_updated.sale_rate_delta, 0]
@@ -1521,7 +1521,7 @@ export class DAO {
   ) {
     const { order_key } = order_proceeds_withdrawn;
 
-    const key_hash = await this.insertKeyHash(this.orderKeyToPoolKey(order_key));
+    const key_hash = await this.insertPoolKeyHash(this.orderKeyToPoolKey(order_key));
 
     await this.pg.query({
       text: `
@@ -1563,7 +1563,7 @@ export class DAO {
   ) {
     let { key: state_key } = virtual_orders_executed;
 
-    const key_hash = await this.insertKeyHash({
+    const key_hash = await this.insertPoolKeyHash({
       token0: state_key.token0,
       token1: state_key.token1,
       fee: state_key.fee,
