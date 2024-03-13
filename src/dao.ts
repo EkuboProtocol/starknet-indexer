@@ -1546,7 +1546,7 @@ export class DAO {
         BigInt(order_proceeds_withdrawn.owner),
         order_proceeds_withdrawn.salt,
         order_proceeds_withdrawn.amount,
-        order_key.buy_token > order_key.sell_token,
+        order_key.sell_token > order_key.buy_token,
         new Date(
           Number(order_key.start_time * 1000n)
         ),
