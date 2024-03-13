@@ -1,5 +1,4 @@
 import { PoolKey } from "./events/core";
-import { OrderKey } from "./events/twamm";
 import { pedersen_from_hex } from "pedersen-fast";
 import { num } from "starknet";
 
@@ -17,7 +16,7 @@ export function populateCache(
   );
 }
 
-export function computePoolKeyHash(pool_key: PoolKey): bigint {
+export function computeKeyHash(pool_key: PoolKey): bigint {
   const cacheKey = computeCacheKey(pool_key);
   return (
     KEY_HASH_CACHE[cacheKey] ??
@@ -37,23 +36,4 @@ export function computePoolKeyHash(pool_key: PoolKey): bigint {
       )
     ))
   );
-}
-
-export function computeTWAMMOrderKeyHash(order_key: OrderKey): bigint {
-  // todo: maybe cache?
-  return BigInt(
-      pedersen_from_hex(
-        pedersen_from_hex(
-          pedersen_from_hex(
-            num.toHex(order_key.sell_token),
-            num.toHex(order_key.buy_token)
-          ),
-          pedersen_from_hex(
-            num.toHex(order_key.fee),
-            num.toHex(order_key.start_time)
-          )
-        ),
-        num.toHex(order_key.end_time)
-      )
-    );
 }

@@ -13,9 +13,8 @@ import {
 } from "./events/core";
 import { TransferEvent } from "./events/nft";
 import { 
-  computePoolKeyHash,
-  populateCache,
-  computeTWAMMOrderKeyHash,
+  computeKeyHash,
+  populateCache
 } from "./pool_key_hash";
 import { PositionMintedWithReferrer } from "./events/positions";
 import {
@@ -436,70 +435,60 @@ export class DAO {
             );
         CREATE UNIQUE INDEX IF NOT EXISTS idx_leaderboard_materialized_view_collector ON leaderboard_materialized_view USING btree (collector);
 
-        CREATE TABLE IF NOT EXISTS twamm_order_keys
-        (
-            key_hash   NUMERIC NOT NULL PRIMARY KEY,
-
-            sell_token NUMERIC NOT NULL,
-            buy_token  NUMERIC NOT NULL,
-
-            fee        NUMERIC NOT NULL,
-
-            start_time timestamptz NOT NULL,
-            end_time   timestamptz NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_twamm_order_keys_sell_token ON twamm_order_keys USING btree (sell_token);
-        CREATE INDEX IF NOT EXISTS idx_twamm_order_keys_buy_token ON twamm_order_keys USING btree (buy_token);
-        CREATE INDEX IF NOT EXISTS idx_twamm_order_keys_sell_token_buy_token ON twamm_order_keys USING btree (sell_token, buy_token);
-        CREATE INDEX IF NOT EXISTS idx_twamm_order_keys_fee ON twamm_order_keys USING btree (fee);
-        CREATE INDEX IF NOT EXISTS idx_twamm_order_keys_time ON twamm_order_keys(end_time, start_time);
-
         CREATE TABLE IF NOT EXISTS twamm_order_updates
         (
-            event_id        int8 NOT NULL PRIMARY KEY REFERENCES event_keys (id) ON DELETE CASCADE,
-            owner           NUMERIC NOT NULL,
-            salt            NUMERIC NOT NULL,
-            order_key_hash  NUMERIC NOT NULL REFERENCES twamm_order_keys (key_hash),
-            sale_rate_delta NUMERIC NOT NULL,
+            event_id          int8 NOT NULL PRIMARY KEY REFERENCES event_keys (id) ON DELETE CASCADE,
 
-            pool_key_hash  NUMERIC NOT NULL REFERENCES pool_keys (key_hash)
+            key_hash          NUMERIC NOT NULL REFERENCES pool_keys (key_hash),
+
+            owner             NUMERIC NOT NULL,
+            salt              NUMERIC NOT NULL,
+            sale_rate_delta0  NUMERIC NOT NULL,
+            sale_rate_delta1  NUMERIC NOT NULL,
+            start_time        timestamptz NOT NULL,
+            end_time          timestamptz NOT NULL
         );
-        CREATE INDEX IF NOT EXISTS idx_twamm_order_updates_order_key_hash_event_id ON twamm_order_updates USING btree (order_key_hash, event_id);
-        CREATE INDEX IF NOT EXISTS idx_twamm_order_updates_order_key_hash ON twamm_order_updates USING btree (order_key_hash);
+        CREATE INDEX IF NOT EXISTS idx_twamm_order_updates_key_hash ON twamm_order_updates USING btree (key_hash);
+        CREATE INDEX IF NOT EXISTS idx_twamm_order_updates_key_hash_event_id ON twamm_order_updates USING btree (key_hash, event_id DESC);
+        CREATE INDEX IF NOT EXISTS idx_twamm_order_updates_key_hash_time ON twamm_order_updates USING btree (key_hash, start_time, end_time);
         CREATE INDEX IF NOT EXISTS idx_twamm_order_updates_owner_salt ON twamm_order_updates USING btree (owner, salt);
-        CREATE INDEX IF NOT EXISTS idx_twamm_order_updates_pool_key_hash ON twamm_order_updates USING btree (pool_key_hash);
+        CREATE INDEX IF NOT EXISTS idx_twamm_order_updates_salt ON twamm_order_updates USING btree (salt);
  
         CREATE TABLE IF NOT EXISTS twamm_proceeds_withdrawals
         (
-            event_id       int8 NOT NULL PRIMARY KEY REFERENCES event_keys (id) ON DELETE CASCADE,
-            owner          NUMERIC NOT NULL,
-            salt           NUMERIC NOT NULL,
-            order_key_hash NUMERIC NOT NULL REFERENCES twamm_order_keys (key_hash),
-            amount         NUMERIC NOT NULL,
+            event_id    int8 NOT NULL PRIMARY KEY REFERENCES event_keys (id) ON DELETE CASCADE,
 
-            pool_key_hash  NUMERIC NOT NULL REFERENCES pool_keys (key_hash)
+            key_hash    NUMERIC NOT NULL REFERENCES pool_keys (key_hash),
+
+            owner       NUMERIC NOT NULL,
+            salt        NUMERIC NOT NULL,
+            amount      NUMERIC NOT NULL,
+            is_token1   BOOLEAN NOT NULL,
+            start_time  timestamptz NOT NULL,
+            end_time    timestamptz NOT NULL
         );
-        CREATE INDEX IF NOT EXISTS idx_twamm_proceeds_withdrawals_order_key_hash_event_id ON twamm_proceeds_withdrawals USING btree (order_key_hash, event_id);
+        CREATE INDEX IF NOT EXISTS idx_twamm_proceeds_withdrawals_key_hash_event_id ON twamm_proceeds_withdrawals USING btree (key_hash, event_id DESC);
+        CREATE INDEX IF NOT EXISTS idx_twamm_proceeds_withdrawals_key_hash_time ON twamm_proceeds_withdrawals USING btree (key_hash, start_time, end_time);
         CREATE INDEX IF NOT EXISTS idx_twamm_proceeds_withdrawals_owner_salt ON twamm_proceeds_withdrawals USING btree (owner, salt);
         CREATE INDEX IF NOT EXISTS idx_twamm_proceeds_withdrawals_salt ON twamm_proceeds_withdrawals USING btree (salt);
-        CREATE INDEX IF NOT EXISTS idx_twamm_proceeds_withdrawals_pool_key_hash ON twamm_proceeds_withdrawals USING btree (pool_key_hash);
  
         CREATE TABLE IF NOT EXISTS twamm_virtual_order_executions
         (
             event_id          int8 NOT NULL PRIMARY KEY REFERENCES event_keys (id) ON DELETE CASCADE,
-            pool_key_hash     NUMERIC NOT NULL REFERENCES pool_keys (key_hash),
+            
+            key_hash          NUMERIC NOT NULL REFERENCES pool_keys (key_hash),
+
             token0_sale_rate  NUMERIC NOT NULL,
             token1_sale_rate  NUMERIC NOT NULL,
             delta0            NUMERIC NOT NULL,
             delta1            NUMERIC NOT NULL
         );
-        CREATE INDEX IF NOT EXISTS idx_twamm_virtual_order_executions_pool_key_hash_event_id ON twamm_virtual_order_executions USING btree (pool_key_hash, event_id DESC);
+        CREATE INDEX IF NOT EXISTS idx_twamm_virtual_order_executions_pool_key_hash_event_id ON twamm_virtual_order_executions USING btree (key_hash, event_id DESC);
 
         CREATE OR REPLACE VIEW twamm_pool_states_view AS (
           WITH lvoe AS (
               SELECT 
-                  key_hash as pool_key_hash,
-                  COALESCE(last_virtual_order_execution.event_id, 0) AS last_virtual_order_execution_event_id,
+                  key_hash,
                   COALESCE(last_virtual_order_execution.token0_sale_rate, 0) AS token0_sale_rate,
                   COALESCE(last_virtual_order_execution.token1_sale_rate, 0) AS token1_sale_rate,
                   COALESCE(block.block_time, DATE('1970-01-01T00:00:00.000Z')) AS block_time
@@ -513,7 +502,7 @@ export class DAO {
                       FROM 
                           twamm_virtual_order_executions
                       WHERE 
-                          pool_keys.key_hash = twamm_virtual_order_executions.pool_key_hash
+                          pool_keys.key_hash = twamm_virtual_order_executions.key_hash
                       ORDER BY 
                           event_id DESC
                       LIMIT 1
@@ -539,77 +528,51 @@ export class DAO {
                   ) AS block on TRUE
               where pool_keys.extension = ${process.env.TWAMM_ADDRESS}
           ),
-          order_keys AS (
+          ou AS (
               SELECT 
-                  key_hash,
-                  buy_token,
-                  sell_token
+                  tou.key_hash,
+                  SUM(tou.sale_rate_delta0) AS sale_rate_delta0,
+                  SUM(tou.sale_rate_delta1) AS sale_rate_delta1
               FROM 
                   lvoe
                   LEFT JOIN LATERAL (
-                      SELECT
-                          key_hash,
-                          buy_token,
-                          sell_token
-                      FROM
-                          twamm_order_keys
-                      WHERE
-                          end_time > lvoe.block_time AND start_time <= lvoe.block_time
-                  ) AS ok on TRUE
-          ),
-          ou AS (
-              SELECT 
-                  tou.pool_key_hash,
-                  tou.buy_token,
-                  tou.sell_token,
-                  SUM(tou.sale_rate_delta) AS sale_rate_delta,
-                  CASE 
-                      WHEN tou.buy_token > tou.sell_token THEN FALSE
-                      ELSE TRUE
-                  END AS is_token1
-              FROM 
-                  order_keys
-                  LEFT JOIN LATERAL (
                       SELECT 
-                          pool_key_hash,
-                          buy_token,
-                          sell_token,
-                          sale_rate_delta
+                          key_hash,
+                          sale_rate_delta0,
+                          sale_rate_delta1
                       FROM
                           twamm_order_updates
                       WHERE
-                          order_keys.key_hash = twamm_order_updates.order_key_hash
+                            key_hash = twamm_order_updates.key_hash 
+                        AND 
+                            end_time > lvoe.block_time
+                        AND 
+                            start_time <= lvoe.block_time
                   ) AS tou on TRUE
               GROUP BY
-                  tou.pool_key_hash, tou.buy_token, tou.sell_token
+                  tou.key_hash
           )
-          SELECT 
-              lvoe.pool_key_hash,
+          SELECT
+              lvoe.key_hash,
               lvoe.block_time,
-              CASE
-                  WHEN is_token1 THEN token1_sale_rate + sale_rate_delta
-                  ELSE token1_sale_rate
-              END AS token1_sale_rate,
-              CASE
-                  WHEN NOT is_token1 THEN token0_sale_rate + sale_rate_delta
-                  ELSE token0_sale_rate
-              END AS token0_sale_rate
-          FROM 
+              lvoe.token0_sale_rate + COALESCE(ou.sale_rate_delta0, 0) AS token0_sale_rate,
+              lvoe.token1_sale_rate + COALESCE(ou.sale_rate_delta1, 0) AS token1_sale_rate
+          FROM
               lvoe
-              LEFT JOIN ou on lvoe.pool_key_hash = ou.pool_key_hash
-         );
+              JOIN ou ON lvoe.key_hash = ou.key_hash
+        );
 
         CREATE MATERIALIZED VIEW IF NOT EXISTS twamm_pool_states_materialized AS
           (
             SELECT 
-              pool_key_hash,
+              key_hash,
               block_time,
               token0_sale_rate,
               token1_sale_rate
             FROM
               twamm_pool_states_view
         );
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_twamm_pool_states_materialized_pool_key_hash ON twamm_pool_states_materialized USING btree (pool_key_hash);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_twamm_pool_states_materialized_key_hash ON twamm_pool_states_materialized USING btree (key_hash);
     `);
   }
 
@@ -829,7 +792,7 @@ export class DAO {
             `,
       values: [
         events.map((e) => eventKeyToId(e.key)),
-        events.map((e) => computePoolKeyHash(e.parsed.pool_key)),
+        events.map((e) => computeKeyHash(e.parsed.pool_key)),
         events.map(() => owner),
         events.map((e) => e.parsed.position_key.salt),
         events.map((e) => e.parsed.position_key.bounds.lower),
@@ -840,8 +803,8 @@ export class DAO {
     });
   }
 
-  private async insertPoolKeyHash(pool_key: PoolKey) {
-    const key_hash = computePoolKeyHash(pool_key);
+  private async insertKeyHash(pool_key: PoolKey) {
+    const key_hash = computeKeyHash(pool_key);
 
     await this.pg.query({
       text: `
@@ -930,7 +893,7 @@ export class DAO {
     event: PositionUpdatedEvent,
     key: EventKey
   ) {
-    const pool_key_hash = await this.insertPoolKeyHash(event.pool_key);
+    const pool_key_hash = await this.insertKeyHash(event.pool_key);
 
     await this.pg.query({
       text: `
@@ -976,7 +939,7 @@ export class DAO {
     event: PositionFeesCollectedEvent,
     key: EventKey
   ) {
-    const pool_key_hash = await this.insertPoolKeyHash(event.pool_key);
+    const pool_key_hash = await this.insertKeyHash(event.pool_key);
 
     await this.pg.query({
       name: "insert-position-fees-collected",
@@ -1020,7 +983,7 @@ export class DAO {
     event: PoolInitializationEvent,
     key: EventKey
   ) {
-    const pool_key_hash = await this.insertPoolKeyHash(event.pool_key);
+    const pool_key_hash = await this.insertKeyHash(event.pool_key);
 
     await this.pg.query({
       text: `
@@ -1086,7 +1049,7 @@ export class DAO {
     event: ProtocolFeesPaidEvent,
     key: EventKey
   ) {
-    const pool_key_hash = await this.insertPoolKeyHash(event.pool_key);
+    const pool_key_hash = await this.insertKeyHash(event.pool_key);
 
     await this.pg.query({
       name: "insert-protocol-fees-paid",
@@ -1130,7 +1093,7 @@ export class DAO {
     event: FeesAccumulatedEvent,
     key: EventKey
   ) {
-    const pool_key_hash = await this.insertPoolKeyHash(event.pool_key);
+    const pool_key_hash = await this.insertKeyHash(event.pool_key);
 
     await this.pg.query({
       text: `
@@ -1196,7 +1159,7 @@ export class DAO {
   }
 
   public async insertSwappedEvent(event: SwappedEvent, key: EventKey) {
-    const pool_key_hash = await this.insertPoolKeyHash(event.pool_key);
+    const pool_key_hash = await this.insertKeyHash(event.pool_key);
 
     await this.pg.query({
       text: `
@@ -1494,46 +1457,16 @@ export class DAO {
     }
   }
 
-  private async insertOrderKeyHash(order_key: OrderKey) {
-    const key_hash = computeTWAMMOrderKeyHash(order_key);
-
-    await this.pg.query({
-      text: `
-                INSERT INTO twamm_order_keys (
-                  key_hash,
-                  sell_token,
-                  buy_token,
-                  fee,
-                  start_time,
-                  end_time
-                )
-                VALUES ($1, $2, $3, $4, $5, $6)
-                ON CONFLICT DO NOTHING;
-            `,
-      values: [
-        key_hash,
-        BigInt(order_key.sell_token),
-        BigInt(order_key.buy_token),
-        order_key.fee,
-        new Date(
-              Number(order_key.start_time * 1000n)
-        ),
-        new Date(
-              Number(order_key.end_time * 1000n)
-        ),
-      ],
-    });
-    return key_hash;
-  }
-
   public async insertTWAMMOrderUpdatedEvent(
     order_updated: OrderUpdatedEvent,
     key: EventKey
   ) {
     const { order_key } = order_updated;
 
-    const order_key_hash = await this.insertOrderKeyHash(order_key);
-    const pool_key_hash = await this.insertPoolKeyHash(this.orderKeyToPoolKey(order_key));
+    const key_hash = await this.insertKeyHash(this.orderKeyToPoolKey(order_key));
+
+    const [sale_rate_delta0, sale_rate_delta1] = order_key.sell_token > order_key.buy_token ?
+      [0, order_updated.sale_rate_delta] : [order_updated.sale_rate_delta, 0]
 
     await this.pg.query({
       text: `
@@ -1547,15 +1480,17 @@ export class DAO {
                 INSERT INTO twamm_order_updates
                     (
                         event_id,
+                        key_hash,
                         owner,
                         salt,
-                        order_key_hash,
-                        sale_rate_delta,
-                        pool_key_hash
+                        sale_rate_delta0,
+                        sale_rate_delta1,
+                        start_time,
+                        end_time
                     )
                 VALUES 
                     (
-                        (SELECT id FROM inserted_event), $5, $6, $7, $8, $9
+                        (SELECT id FROM inserted_event), $5, $6, $7, $8, $9, $10, $11
                     );
             `,
       values: [
@@ -1564,12 +1499,18 @@ export class DAO {
         key.eventIndex,
         key.transactionHash,
 
+        key_hash,
+
         BigInt(order_updated.owner),
         order_updated.salt,
-        order_key_hash,
-        order_updated.sale_rate_delta,
-
-        pool_key_hash
+        sale_rate_delta0,
+        sale_rate_delta1,
+        new Date(
+          Number(order_key.start_time * 1000n)
+        ),
+        new Date(
+          Number(order_key.end_time * 1000n)
+        ),
       ],
     });
   }
@@ -1580,8 +1521,7 @@ export class DAO {
   ) {
     const { order_key } = order_proceeds_withdrawn;
 
-    const order_key_hash = await this.insertOrderKeyHash(order_key);
-    const pool_key_hash = await this.insertPoolKeyHash(this.orderKeyToPoolKey(order_key));
+    const key_hash = await this.insertKeyHash(this.orderKeyToPoolKey(order_key));
 
     await this.pg.query({
       text: `
@@ -1591,9 +1531,9 @@ export class DAO {
                     RETURNING id
                 )
                 INSERT INTO twamm_proceeds_withdrawals
-                    (event_id, owner, salt, order_key_hash, amount, pool_key_hash)
+                    (event_id, key_hash, owner, salt, amount, is_token1, start_time, end_time)
                 VALUES
-                    ((SELECT id FROM inserted_event), $5, $6, $7, $8, $9);
+                    ((SELECT id FROM inserted_event), $5, $6, $7, $8, $9, $10, $11);
             `,
       values: [
         key.blockNumber,
@@ -1601,32 +1541,35 @@ export class DAO {
         key.eventIndex,
         key.transactionHash,
 
+        key_hash,
+
         BigInt(order_proceeds_withdrawn.owner),
         order_proceeds_withdrawn.salt,
-        order_key_hash,
         order_proceeds_withdrawn.amount,
-
-        pool_key_hash 
+        order_key.buy_token > order_key.sell_token,
+        new Date(
+          Number(order_key.start_time * 1000n)
+        ),
+        new Date(
+          Number(order_key.end_time * 1000n)
+        )
       ],
     });
   }
 
-
- public async insertTWAMMVirtualOrdersExecutedEvent(
+  public async insertTWAMMVirtualOrdersExecutedEvent(
     virtual_orders_executed: VirtualOrdersExecutedEvent,
     key: EventKey
   ) {
     let { key: state_key } = virtual_orders_executed;
 
-    const poolKey: PoolKey = {
+    const key_hash = await this.insertKeyHash({
       token0: state_key.token0,
       token1: state_key.token1,
       fee: state_key.fee,
       tick_spacing: BigInt(MAX_TICK_SPACING),
       extension: BigInt(process.env.TWAMM_ADDRESS)
-    };
-
-    const pool_key_hash = await this.insertPoolKeyHash(poolKey);
+    });
 
     await this.pg.query({
       text: `
@@ -1638,7 +1581,7 @@ export class DAO {
                     RETURNING id
                 )
                 INSERT INTO twamm_virtual_order_executions
-                    (event_id, pool_key_hash, token0_sale_rate, token1_sale_rate, delta0, delta1)
+                    (event_id, key_hash, token0_sale_rate, token1_sale_rate, delta0, delta1)
                 VALUES
                     ((SELECT id FROM inserted_event), $5, $6, $7, $8, $9);
             `,
@@ -1648,7 +1591,7 @@ export class DAO {
         key.eventIndex,
         key.transactionHash,
 
-        pool_key_hash,
+        key_hash,
         virtual_orders_executed.token0_sale_rate,
         virtual_orders_executed.token1_sale_rate,
         virtual_orders_executed.twamm_delta.amount0,
