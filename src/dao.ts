@@ -489,6 +489,7 @@ export class DAO {
           WITH lvoe AS (
               SELECT 
                   key_hash,
+                  number as block_number,
                   COALESCE(last_virtual_order_execution.token0_sale_rate, 0) AS token0_sale_rate,
                   COALESCE(last_virtual_order_execution.token1_sale_rate, 0) AS token1_sale_rate,
                   COALESCE(block.block_time, DATE('1970-01-01T00:00:00.000Z')) AS block_time
@@ -509,6 +510,7 @@ export class DAO {
                   ) AS last_virtual_order_execution ON TRUE
                   LEFT JOIN LATERAL (
                       SELECT
+                          number,
                           time as block_time
                       FROM
                           blocks
@@ -535,11 +537,19 @@ export class DAO {
                   COALESCE(SUM(tou.sale_rate_delta1), 0) AS sale_rate_delta1
               FROM 
                   lvoe
-                  LEFT JOIN twamm_order_updates tou on tou.key_hash = lvoe.key_hash
-                      AND 
-                          end_time > lvoe.block_time
-                      AND 
-                          start_time = lvoe.block_time
+                  LEFT JOIN (
+                      SELECT 
+                          key_hash,
+                          sale_rate_delta0,
+                          sale_rate_delta1,
+                          block_number,
+                          end_time
+                      FROM twamm_order_updates 
+                      LEFT JOIN event_keys on event_id = id
+                  ) AS tou ON
+                      lvoe.key_hash = tou.key_hash AND
+                      lvoe.block_number = tou.block_number AND
+                      end_time > lvoe.block_time
               GROUP BY lvoe.key_hash
           )
           SELECT
