@@ -530,33 +530,23 @@ export class DAO {
           ),
           ou AS (
               SELECT 
-                  tou.key_hash,
-                  SUM(tou.sale_rate_delta0) AS sale_rate_delta0,
-                  SUM(tou.sale_rate_delta1) AS sale_rate_delta1
+                  lvoe.key_hash,
+                  COALESCE(SUM(tou.sale_rate_delta0), 0) AS sale_rate_delta0,
+                  COALESCE(SUM(tou.sale_rate_delta1), 0) AS sale_rate_delta1
               FROM 
                   lvoe
-                  LEFT JOIN LATERAL (
-                      SELECT 
-                          key_hash,
-                          sale_rate_delta0,
-                          sale_rate_delta1
-                      FROM
-                          twamm_order_updates
-                      WHERE
-                            key_hash = twamm_order_updates.key_hash 
-                        AND 
-                            end_time > lvoe.block_time
-                        AND 
-                            start_time <= lvoe.block_time
-                  ) AS tou on TRUE
-              GROUP BY
-                  tou.key_hash
+                  LEFT JOIN twamm_order_updates tou on tou.key_hash = lvoe.key_hash
+                      AND 
+                          end_time > lvoe.block_time
+                      AND 
+                          start_time = lvoe.block_time
+              GROUP BY lvoe.key_hash
           )
           SELECT
               lvoe.key_hash,
               lvoe.block_time,
-              lvoe.token0_sale_rate + COALESCE(ou.sale_rate_delta0, 0) AS token0_sale_rate,
-              lvoe.token1_sale_rate + COALESCE(ou.sale_rate_delta1, 0) AS token1_sale_rate
+              lvoe.token0_sale_rate + ou.sale_rate_delta0 AS token0_sale_rate,
+              lvoe.token1_sale_rate + ou.sale_rate_delta1 AS token1_sale_rate
           FROM
               lvoe
               JOIN ou ON lvoe.key_hash = ou.key_hash
