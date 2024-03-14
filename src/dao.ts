@@ -448,8 +448,7 @@ export class DAO {
             start_time        timestamptz NOT NULL,
             end_time          timestamptz NOT NULL
         );
-        CREATE INDEX IF NOT EXISTS idx_twamm_order_updates_key_hash ON twamm_order_updates USING btree (key_hash);
-        CREATE INDEX IF NOT EXISTS idx_twamm_order_updates_key_hash_event_id ON twamm_order_updates USING btree (key_hash, event_id DESC);
+        CREATE INDEX IF NOT EXISTS idx_twamm_order_updates_key_hash_event_id ON twamm_order_updates USING btree (key_hash, event_id);
         CREATE INDEX IF NOT EXISTS idx_twamm_order_updates_key_hash_time ON twamm_order_updates USING btree (key_hash, start_time, end_time);
         CREATE INDEX IF NOT EXISTS idx_twamm_order_updates_owner_salt ON twamm_order_updates USING btree (owner, salt);
         CREATE INDEX IF NOT EXISTS idx_twamm_order_updates_salt ON twamm_order_updates USING btree (salt);
@@ -460,14 +459,14 @@ export class DAO {
 
             key_hash    NUMERIC NOT NULL REFERENCES pool_keys (key_hash),
 
-            owner       NUMERIC NOT NULL,
-            salt        NUMERIC NOT NULL,
-            amount      NUMERIC NOT NULL,
-            is_token1   BOOLEAN NOT NULL,
-            start_time  timestamptz NOT NULL,
-            end_time    timestamptz NOT NULL
+            owner         NUMERIC NOT NULL,
+            salt          NUMERIC NOT NULL,
+            amount0       NUMERIC NOT NULL,
+            amount1       NUMERIC NOT NULL,
+            start_time    timestamptz NOT NULL,
+            end_time      timestamptz NOT NULL
         );
-        CREATE INDEX IF NOT EXISTS idx_twamm_proceeds_withdrawals_key_hash_event_id ON twamm_proceeds_withdrawals USING btree (key_hash, event_id DESC);
+        CREATE INDEX IF NOT EXISTS idx_twamm_proceeds_withdrawals_key_hash_event_id ON twamm_proceeds_withdrawals USING btree (key_hash, event_id);
         CREATE INDEX IF NOT EXISTS idx_twamm_proceeds_withdrawals_key_hash_time ON twamm_proceeds_withdrawals USING btree (key_hash, start_time, end_time);
         CREATE INDEX IF NOT EXISTS idx_twamm_proceeds_withdrawals_owner_salt ON twamm_proceeds_withdrawals USING btree (owner, salt);
         CREATE INDEX IF NOT EXISTS idx_twamm_proceeds_withdrawals_salt ON twamm_proceeds_withdrawals USING btree (salt);
@@ -492,10 +491,10 @@ export class DAO {
                   number as block_number,
                   COALESCE(last_virtual_order_execution.token0_sale_rate, 0) AS token0_sale_rate,
                   COALESCE(last_virtual_order_execution.token1_sale_rate, 0) AS token1_sale_rate,
-                  COALESCE(block.block_time, DATE('1970-01-01T00:00:00.000Z')) AS block_time
+                  block_time 
               FROM
                   pool_keys
-                  LEFT JOIN LATERAL (
+                  INNER JOIN LATERAL (
                       SELECT 
                           event_id, 
                           token0_sale_rate, 
@@ -528,16 +527,15 @@ export class DAO {
                       LIMIT
                           1
                   ) AS block on TRUE
-              where pool_keys.extension = ${process.env.TWAMM_ADDRESS}
           ),
           ou AS (
               SELECT 
                   lvoe.key_hash,
-                  COALESCE(SUM(tou.sale_rate_delta0), 0) AS sale_rate_delta0,
-                  COALESCE(SUM(tou.sale_rate_delta1), 0) AS sale_rate_delta1
+                  SUM(tou.sale_rate_delta0) AS sale_rate_delta0,
+                  SUM(tou.sale_rate_delta1) AS sale_rate_delta1
               FROM 
                   lvoe
-                  LEFT JOIN (
+                  INNER JOIN (
                       SELECT 
                           key_hash,
                           sale_rate_delta0,
@@ -555,11 +553,11 @@ export class DAO {
           SELECT
               lvoe.key_hash,
               lvoe.block_time,
-              lvoe.token0_sale_rate + ou.sale_rate_delta0 AS token0_sale_rate,
-              lvoe.token1_sale_rate + ou.sale_rate_delta1 AS token1_sale_rate
+              lvoe.token0_sale_rate + COALESCE(ou.sale_rate_delta0, 0) AS token0_sale_rate,
+              lvoe.token1_sale_rate + COALESCE(ou.sale_rate_delta1, 0) AS token1_sale_rate
           FROM
               lvoe
-              JOIN ou ON lvoe.key_hash = ou.key_hash
+              LEFT JOIN ou ON lvoe.key_hash = ou.key_hash
         );
 
         CREATE MATERIALIZED VIEW IF NOT EXISTS twamm_pool_states_materialized AS
@@ -1523,6 +1521,9 @@ export class DAO {
 
     const key_hash = await this.insertPoolKeyHash(this.orderKeyToPoolKey(order_key));
 
+    const [amount0, amount1] = order_key.sell_token > order_key.buy_token ?
+      [0, order_proceeds_withdrawn.amount] : [order_proceeds_withdrawn.amount, 0]
+
     await this.pg.query({
       text: `
                 WITH inserted_event AS (
@@ -1531,7 +1532,7 @@ export class DAO {
                     RETURNING id
                 )
                 INSERT INTO twamm_proceeds_withdrawals
-                    (event_id, key_hash, owner, salt, amount, is_token1, start_time, end_time)
+                    (event_id, key_hash, owner, salt, amount0, amount1, start_time, end_time)
                 VALUES
                     ((SELECT id FROM inserted_event), $5, $6, $7, $8, $9, $10, $11);
             `,
@@ -1545,8 +1546,8 @@ export class DAO {
 
         BigInt(order_proceeds_withdrawn.owner),
         order_proceeds_withdrawn.salt,
-        order_proceeds_withdrawn.amount,
-        order_key.sell_token > order_key.buy_token,
+        amount0,
+        amount1,
         new Date(
           Number(order_key.start_time * 1000n)
         ),
