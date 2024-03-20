@@ -135,12 +135,12 @@ const refreshLeaderboard = throttle(
       block_number: number;
       transaction_index: number;
     }>(`
-            SELECT id, block_number, transaction_index
-            FROM event_keys
-            WHERE block_number != (SELECT block_number FROM event_keys ORDER BY id DESC LIMIT 1)
-            ORDER BY id DESC
-            LIMIT 1
-        `);
+        SELECT id, block_number, transaction_index
+        FROM event_keys
+        WHERE block_number != (SELECT block_number FROM event_keys ORDER BY id DESC LIMIT 1)
+        ORDER BY id DESC
+        LIMIT 1
+    `);
 
     if (!latestBlockNumberRows.length) {
       logger.info("Not refreshing leaderboard because there are no events");
@@ -490,6 +490,13 @@ const refreshLeaderboard = throttle(
               [transactionHash: string]: string;
             } = {};
 
+            const transactionReceipts: {
+              [transactionHash: string]: {
+                feePaid: bigint;
+                feePaidUnit: starknet.PriceUnit;
+              };
+            } = {};
+
             for (const { event, transaction, receipt } of block.events) {
               const eventKey: EventKey = {
                 blockNumber,
@@ -508,6 +515,13 @@ const refreshLeaderboard = throttle(
                 ? FieldElement.toHex(rawSender)
                 : null;
 
+              const feePaid = FieldElement.toBigInt(
+                receipt.actualFee ?? receipt.actualFeePaid?.amount
+              );
+              const feePaidUnit =
+                receipt.actualFeePaid?.unit ??
+                starknet.PriceUnit.PRICE_UNIT_UNSPECIFIED;
+
               // process each event sequentially through all the event processors in parallel
               // assumption is that none of the event processors operate on the same events, i.e. have the same filters
               // this assumption could be validated at runtime
@@ -523,11 +537,18 @@ const refreshLeaderboard = throttle(
                         FieldElement.toBigInt(filter.keys[ix])
                     )
                   ) {
+                    const transactionMapKey =
+                      eventKey.transactionHash.toString();
                     if (senderHex) {
                       PENDING_ACCOUNT_CLASS_HASH_FETCHES[senderHex] = true;
-                      transactionSenders[eventKey.transactionHash.toString()] =
-                        senderHex;
+                      transactionSenders[transactionMapKey] = senderHex;
                     }
+
+                    transactionReceipts[transactionMapKey] =
+                      transactionReceipts[transactionMapKey] ?? {
+                        feePaid,
+                        feePaidUnit,
+                      };
 
                     const parsed = parser(event.data, 0).value;
 
@@ -545,6 +566,8 @@ const refreshLeaderboard = throttle(
             await dao.writeTransactionSenders(
               Object.entries(transactionSenders)
             );
+
+            await dao.writeReceipts(Object.entries(transactionReceipts));
 
             // refresh operational views at the end of the batch
             if (isPending || deletedCount > 0) {
