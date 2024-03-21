@@ -1594,7 +1594,8 @@ export class DAO {
 
   public async insertTWAMMVirtualOrdersExecutedEvent(
     virtual_orders_executed: VirtualOrdersExecutedEvent,
-    key: EventKey
+    key: EventKey,
+    emitter: string
   ) {
     let { key: state_key } = virtual_orders_executed;
 
@@ -1603,7 +1604,7 @@ export class DAO {
       token1: state_key.token1,
       fee: state_key.fee,
       tick_spacing: BigInt(MAX_TICK_SPACING),
-      extension: BigInt(process.env.TWAMM_ADDRESS)
+      extension: BigInt(emitter)
     });
 
     await this.pg.query({

@@ -283,7 +283,7 @@ export const EVENT_PROCESSORS = [
     parser: parseVirtualOrdersExecuted,
     async handle(dao, { parsed, key }): Promise<void> {
       logger.debug("VirtualOrdersExecuted", { parsed, key });
-      await dao.insertTWAMMVirtualOrdersExecutedEvent(parsed, key);
+      await dao.insertTWAMMVirtualOrdersExecutedEvent(parsed, key, process.env.TWAMM_ADDRESS);
     },
   },
 ] as const;
