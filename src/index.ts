@@ -73,9 +73,6 @@ const refreshAnalyticalTables = throttle(
           id: ix + 1,
           address: ep.filter.fromAddress,
           keys: ep.filter.keys,
-
-          includeReceipt: true,
-          includeTransaction: true,
         })),
       }),
     ],
