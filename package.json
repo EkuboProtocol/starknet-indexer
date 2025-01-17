@@ -21,9 +21,7 @@
     "@apibara/protocol": "^2.0.0-beta.32",
     "@apibara/starknet": "^2.0.0-beta.32",
     "dotenv": "^16.4.7",
-    "pedersen-fast": "^0.4.0",
     "pg": "^8.13.1",
-    "starknet": "^6.11.0",
     "tadaaa": "^1.0.1",
     "winston": "^3.17.0"
   }
