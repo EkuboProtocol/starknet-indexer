@@ -15,6 +15,19 @@ const pool = new Pool({
 
 const streamClient = createClient(StarknetStream, process.env["APIBARA_URL"]!);
 
+function millisecondsToHumanReadable(milliseconds: number): string {
+  if (milliseconds < 10000) {
+    return `${milliseconds / 1000}ms`;
+  }
+  if (milliseconds < 240000) {
+    return `${Math.floor(milliseconds / 1000)}s`;
+  }
+  if (milliseconds < 86400000) {
+    return `${Math.floor(milliseconds / 60000)} min, ${millisecondsToHumanReadable(milliseconds % 60000)}`;
+  }
+  return `${Math.floor(milliseconds / 86400000)}d, ${millisecondsToHumanReadable(milliseconds % 86400000)}`;
+}
+
 const refreshAnalyticalTables = throttle(
   async function (
     since: Date = new Date(
@@ -136,6 +149,7 @@ const refreshAnalyticalTables = throttle(
 
         let deletedCount: number = 0;
 
+        let eventsProcessed: number = 0;
         for (const block of message.data.data) {
           const blockNumber = Number(block!.header!.blockNumber);
           deletedCount += await dao.deleteOldBlockNumbers(blockNumber);
@@ -169,6 +183,7 @@ const refreshAnalyticalTables = throttle(
             // this assumption could be validated at runtime
             await Promise.all(
               event.filterIds!.map(async (matchingFilterId) => {
+                eventsProcessed++;
                 const { parser, handle } =
                   EVENT_PROCESSORS[matchingFilterId - 1];
                 const parsed = parser(event.data!, 0).value;
@@ -194,9 +209,10 @@ const refreshAnalyticalTables = throttle(
             message: `Processed to block`,
             blockNumber,
             isPending,
+            eventsProcessed,
             blockTimestamp: blockTime,
-            lagMilliseconds: Math.floor(
-              Date.now() - Number(blockTime.getTime()),
+            lag: millisecondsToHumanReadable(
+              Math.floor(Date.now() - Number(blockTime.getTime())),
             ),
           });
         }
