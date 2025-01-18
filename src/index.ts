@@ -15,17 +15,27 @@ const pool = new Pool({
 
 const streamClient = createClient(StarknetStream, process.env["APIBARA_URL"]!);
 
-function millisecondsToHumanReadable(milliseconds: number): string {
-  if (milliseconds < 10000) {
-    return `${milliseconds / 1000}ms`;
+function msToHumanShort(ms: number): string {
+  const units = [
+    { label: "d", ms: 86400000 },
+    { label: "h", ms: 3600000 },
+    { label: "min", ms: 60000 },
+    { label: "s", ms: 1000 },
+    { label: "ms", ms: 1 },
+  ];
+
+  const parts: string[] = [];
+
+  for (const { label, ms: unitMs } of units) {
+    if (ms >= unitMs) {
+      const count = Math.floor(ms / unitMs);
+      ms %= unitMs;
+      parts.push(`${count}${label}`);
+      if (parts.length === 3) break; // Limit to 2 components
+    }
   }
-  if (milliseconds < 240000) {
-    return `${Math.floor(milliseconds / 1000)}s`;
-  }
-  if (milliseconds < 86400000) {
-    return `${Math.floor(milliseconds / 60000)} min, ${millisecondsToHumanReadable(milliseconds % 60000)}`;
-  }
-  return `${Math.floor(milliseconds / 86400000)}d, ${millisecondsToHumanReadable(milliseconds % 86400000)}`;
+
+  return parts.join(", ") || "0ms";
 }
 
 const refreshAnalyticalTables = throttle(
@@ -204,7 +214,7 @@ const refreshAnalyticalTables = throttle(
             isPending,
             eventsProcessed,
             blockTimestamp: blockTime,
-            lag: millisecondsToHumanReadable(
+            lag: msToHumanShort(
               Math.floor(Date.now() - Number(blockTime.getTime())),
             ),
           });
