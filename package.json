@@ -5,14 +5,17 @@
   "main": "index.js",
   "description": "Indexes Ekubo data",
   "scripts": {
-    "start": "NETWORK=mainnet bun src/index.ts",
-    "start:sepolia": "NETWORK=sepolia bun src/index.ts",
+    "start": "NETWORK=mainnet jiti src/index.ts",
+    "start:sepolia": "NETWORK=sepolia jiti src/index.ts",
     "test": "vitest"
   },
   "author": "Moody Salem",
   "type": "module",
+  "engines": {
+    "node": "^22.10.0"
+  },
   "devDependencies": {
-    "@types/bun": "^1.1.17",
+    "@types/node": "^22.10.7",
     "@types/pg": "^8.11.10",
     "typescript": "^5.7.3",
     "vitest": "^3.0.2"
@@ -21,6 +24,7 @@
     "@apibara/protocol": "^2.0.0-beta.32",
     "@apibara/starknet": "^2.0.0-beta.32",
     "dotenv": "^16.4.7",
+    "jiti": "^2.4.2",
     "pg": "^8.13.1",
     "tadaaa": "^1.0.1",
     "winston": "^3.17.0"

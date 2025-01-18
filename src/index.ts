@@ -6,7 +6,7 @@ import { logger } from "./logger";
 import { DAO } from "./dao";
 import { Pool } from "pg";
 import { throttle } from "tadaaa";
-import { EVENT_PROCESSORS } from "./EVENT_PROCESSORS";
+import { EVENT_PROCESSORS } from "./eventProcessors";
 
 const pool = new Pool({
   connectionString: process.env.PG_CONNECTION_STRING,
@@ -67,6 +67,7 @@ const refreshAnalyticalTables = throttle(
   refreshAnalyticalTables(new Date(0));
 
   for await (const message of streamClient.streamData({
+    header: "always",
     filter: [
       Filter.make({
         events: EVENT_PROCESSORS.map((ep, ix) => ({

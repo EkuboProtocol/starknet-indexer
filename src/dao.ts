@@ -12,7 +12,7 @@ import type {
   SwappedEvent,
 } from "./events/core";
 import type { TransferEvent } from "./events/nft";
-import { computeKeyHash, populateCache } from "./pool_key_hash";
+import { computeKeyHash } from "./poolKeyHash.ts";
 import type { PositionMintedWithReferrer } from "./events/positions";
 import type {
   OrderKey,
@@ -78,37 +78,8 @@ export class DAO {
     if (cursor) {
       await this.deleteOldBlockNumbers(Number(cursor.orderKey) + 1);
     }
-    await this.populatePoolKeyCache();
     await this.commitTransaction();
     return cursor;
-  }
-
-  private async populatePoolKeyCache() {
-    const { rows } = await this.pg.query<{
-      key_hash: string;
-      token0: string;
-      token1: string;
-      fee: string;
-      tick_spacing: number;
-      extension: number;
-    }>(`
-            SELECT key_hash, token0, token1, fee, tick_spacing, extension
-            FROM pool_keys
-        `);
-    populateCache(
-      rows.map(({ token0, token1, key_hash, fee, extension, tick_spacing }) => {
-        return {
-          pool_key: {
-            token0: BigInt(token0),
-            token1: BigInt(token1),
-            fee: BigInt(fee),
-            tick_spacing: BigInt(tick_spacing),
-            extension: BigInt(extension),
-          },
-          hash: BigInt(key_hash),
-        };
-      }),
-    );
   }
 
   private async createSchema(): Promise<void> {

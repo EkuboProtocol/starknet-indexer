@@ -68,8 +68,8 @@ import type {
 } from "./events/tokenRegistry";
 import { parseSnapshotEvent } from "./events/oracle";
 import type { SnapshotEvent } from "./events/oracle";
-import { parseOrderClosed, parseOrderPlaced } from "./events/limit_orders";
-import type { OrderClosedEvent, OrderPlacedEvent } from "./events/limit_orders";
+import { parseOrderClosed, parseOrderPlaced } from "./events/limitOrders";
+import type { OrderClosedEvent, OrderPlacedEvent } from "./events/limitOrders";
 
 export const EVENT_PROCESSORS = [
   <EventProcessor<LegacyPositionMintedEvent>>{
