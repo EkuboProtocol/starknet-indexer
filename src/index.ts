@@ -167,7 +167,7 @@ const refreshAnalyticalTables = throttle(
           const blockTime = block!.header!.timestamp!;
 
           await dao.insertBlock({
-            hash: BigInt(block!.header!.blockHash!),
+            hash: BigInt(block!.header!.blockHash ?? 0),
             number: block!.header!.blockNumber,
             time: blockTime,
           });
