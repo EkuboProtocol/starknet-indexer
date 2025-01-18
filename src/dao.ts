@@ -2204,7 +2204,7 @@ export class DAO {
                         ${parsed.calls
                           .map(
                             (call, ix) =>
-                              `($5, ${ix}, ${call.to}, ${
+                              `($6, ${ix}, ${call.to}, ${
                                 call.selector
                               }, '{${call.calldata
                                 .map((c) => c.toString())
