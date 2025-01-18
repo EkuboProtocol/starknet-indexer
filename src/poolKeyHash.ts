@@ -1,7 +1,6 @@
 import type { PoolKey } from "./events/core";
 import { createHash } from "crypto";
 
-// instead uses the node crypto api: https://nodejs.org/api/crypto.html#hashdigestencoding
 export function computeKeyHash(pool_key: PoolKey): bigint {
   return BigInt(
     `0x${createHash("sha256")
