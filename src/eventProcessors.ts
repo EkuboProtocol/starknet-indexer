@@ -264,7 +264,7 @@ export const EVENT_PROCESSORS = [
   },
   <EventProcessor<OrderUpdatedEvent>>{
     filter: {
-      fromAddress: process.env["TWAMM_ADDRESS"],
+      fromAddress: process.env.TWAMM_ADDRESS,
       keys: [
         // OrderUpdated
         "0xb670ed7b7ee8ccb350963a7dea39493daff6e7a43ab021a0e4ac2d652d359e",
@@ -278,7 +278,7 @@ export const EVENT_PROCESSORS = [
   },
   <EventProcessor<OrderProceedsWithdrawnEvent>>{
     filter: {
-      fromAddress: process.env["TWAMM_ADDRESS"],
+      fromAddress: process.env.TWAMM_ADDRESS,
       keys: [
         // OrderProceedsWithdrawn
         "0x3e074150c5906b2e323cea942b41f67f3639fcae5dc1fe4cf19c6801dff89b5",
@@ -292,7 +292,7 @@ export const EVENT_PROCESSORS = [
   },
   <EventProcessor<VirtualOrdersExecutedEvent>>{
     filter: {
-      fromAddress: process.env["TWAMM_ADDRESS"],
+      fromAddress: process.env.TWAMM_ADDRESS,
       keys: [
         // VirtualOrdersExecuted
         "0x29416aa69fb4a5270dd3c2b3e6d05f457dc0dbf96f423db1f86c5b7b2e6840f",
@@ -306,7 +306,7 @@ export const EVENT_PROCESSORS = [
   },
   <EventProcessor<StakedEvent>>{
     filter: {
-      fromAddress: process.env["STAKER_ADDRESS"],
+      fromAddress: process.env.STAKER_ADDRESS,
       keys: [
         // Staked
         "0x024fdaadc324c3bb8e59febfb2e8a399331e58193489e54ac40fec46745a9ebe",
@@ -320,7 +320,7 @@ export const EVENT_PROCESSORS = [
   },
   <EventProcessor<WithdrawnEvent>>{
     filter: {
-      fromAddress: process.env["STAKER_ADDRESS"],
+      fromAddress: process.env.STAKER_ADDRESS,
       keys: [
         // Withdrawn
         "0x036a4d15ab9e146faab90d4abc1c0cad17c4ded24551c781ba100392b5a70248",
@@ -334,7 +334,7 @@ export const EVENT_PROCESSORS = [
   },
   <EventProcessor<GovernorProposedEvent>>{
     filter: {
-      fromAddress: process.env["GOVERNOR_ADDRESS"],
+      fromAddress: process.env.GOVERNOR_ADDRESS,
       keys: [
         // Proposed
         "0x02a98c37f5b13fe14803e72b284c81be9ebbedc6cf74ed8d1489ed74951cba3f",
@@ -348,7 +348,7 @@ export const EVENT_PROCESSORS = [
   },
   <EventProcessor<GovernorCanceledEvent>>{
     filter: {
-      fromAddress: process.env["GOVERNOR_ADDRESS"],
+      fromAddress: process.env.GOVERNOR_ADDRESS,
       keys: [
         // Canceled
         "0xad1f80a0e6ac2d42f6ce99670de84817aef2368cd22a19f85fcb721f689192",
@@ -362,7 +362,7 @@ export const EVENT_PROCESSORS = [
   },
   <EventProcessor<GovernorCreationThresholdBreached>>{
     filter: {
-      fromAddress: process.env["GOVERNOR_ADDRESS"],
+      fromAddress: process.env.GOVERNOR_ADDRESS,
       keys: [
         // CreationThresholdBreached
         "0xda0eb1cb71bdbfac21648d8b87024714f7eb6207978c7eb359a20144a99baf",
@@ -377,7 +377,7 @@ export const EVENT_PROCESSORS = [
   },
   <EventProcessor<GovernorVotedEvent>>{
     filter: {
-      fromAddress: process.env["GOVERNOR_ADDRESS"],
+      fromAddress: process.env.GOVERNOR_ADDRESS,
       keys: [
         // Voted
         "0x5c9afac1c510b50d3e0004024ba7b8e190864f1543dd8025d08f88410fb162",
@@ -391,7 +391,7 @@ export const EVENT_PROCESSORS = [
   },
   <EventProcessor<GovernorExecutedEvent>>{
     filter: {
-      fromAddress: process.env["GOVERNOR_ADDRESS"],
+      fromAddress: process.env.GOVERNOR_ADDRESS,
       keys: [
         // Executed
         "0x01f4317aae43f6c24b2b85c6d8b21d5fa0a28cee0476cd52ca5d60d4787aab78",
@@ -405,7 +405,7 @@ export const EVENT_PROCESSORS = [
   },
   <EventProcessor<DescribedEvent>>{
     filter: {
-      fromAddress: process.env["GOVERNOR_ADDRESS"],
+      fromAddress: process.env.GOVERNOR_ADDRESS,
       keys: [
         // Described
         "0x8643a1c8a461189d5b77de7576b06aa9148c9127101228f02816d13768e7a9",
@@ -419,7 +419,7 @@ export const EVENT_PROCESSORS = [
   },
   <EventProcessor<GovernorReconfiguredEvent>>{
     filter: {
-      fromAddress: process.env["GOVERNOR_ADDRESS"],
+      fromAddress: process.env.GOVERNOR_ADDRESS,
       keys: [
         // Reconfigured
         "0x02b9973fd701ab68169e139e241db74576eca4e885bad73d016982a59f1ac9fb",
@@ -433,7 +433,7 @@ export const EVENT_PROCESSORS = [
   },
   <EventProcessor<SnapshotEvent>>{
     filter: {
-      fromAddress: process.env["ORACLE_ADDRESS"],
+      fromAddress: process.env.ORACLE_ADDRESS,
       keys: [
         // SnapshotEvent
         "0x0385e1b60fdfb8aeee9212a69cdb72415cef7b24ec07a60cdd65b65d0582238b",
@@ -447,7 +447,7 @@ export const EVENT_PROCESSORS = [
   },
   <EventProcessor<OrderPlacedEvent>>{
     filter: {
-      fromAddress: process.env["LIMIT_ORDERS_ADDRESS"],
+      fromAddress: process.env.LIMIT_ORDERS_ADDRESS,
       keys: [
         // OrderPlaced
         "0x03b935dbbdb7f463a394fc8729e7e26e30edebbc3bd5617bf1d7cf9e1ce6f7cb",
@@ -461,7 +461,7 @@ export const EVENT_PROCESSORS = [
   },
   <EventProcessor<OrderClosedEvent>>{
     filter: {
-      fromAddress: process.env["LIMIT_ORDERS_ADDRESS"],
+      fromAddress: process.env.LIMIT_ORDERS_ADDRESS,
       keys: [
         // OrderClosed
         "0x0196e77c6eab92283e3fc303198bb0a523c0c7d93b4de1d8bf636eab7517c4ae",

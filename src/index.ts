@@ -41,7 +41,7 @@ function msToHumanShort(ms: number): string {
 const refreshAnalyticalTables = throttle(
   async function (
     since: Date = new Date(
-      Date.now() - parseInt(process.env["REFRESH_RATE_ANALYTICAL_VIEWS"]!) * 2,
+      Date.now() - parseInt(process.env.REFRESH_RATE_ANALYTICAL_VIEWS) * 2,
     ),
   ) {
     const timer = logger.startTimer();
@@ -63,7 +63,7 @@ const refreshAnalyticalTables = throttle(
     });
   },
   {
-    delay: parseInt(process.env["REFRESH_RATE_ANALYTICAL_VIEWS"]!),
+    delay: parseInt(process.env.REFRESH_RATE_ANALYTICAL_VIEWS),
     leading: true,
     async onError(err) {
       logger.error("Failed to refresh analytical tables", err);

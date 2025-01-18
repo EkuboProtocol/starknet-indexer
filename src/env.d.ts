@@ -5,11 +5,19 @@ declare namespace NodeJS {
     CORE_ADDRESS: `0x${string}`;
     POSITIONS_ADDRESS: `0x${string}`;
     NFT_ADDRESS: `0x${string}`;
+    TWAMM_ADDRESS: `0x${string}`;
+    STAKER_ADDRESS: `0x${string}`;
+    GOVERNOR_ADDRESS: `0x${string}`;
+    ORACLE_ADDRESS: `0x${string}`;
+    LIMIT_ORDERS_ADDRESS: `0x${string}`;
+
     TOKEN_REGISTRY_ADDRESS: `0x${string}`;
     TOKEN_REGISTRY_V2_ADDRESS: `0x${string}`;
     TOKEN_REGISTRY_V3_ADDRESS: `0x${string}`;
 
     STARTING_CURSOR_BLOCK_NUMBER: string;
+
+    REFRESH_RATE_ANALYTICAL_VIEWS: string;
 
     APIBARA_AUTH_TOKEN: string;
 
