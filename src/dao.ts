@@ -34,7 +34,7 @@ import type {
   TokenRegistrationEventV3,
 } from "./events/tokenRegistry";
 import type { SnapshotEvent } from "./events/oracle";
-import type { OrderClosedEvent, OrderPlacedEvent } from "./events/limit_orders";
+import type { OrderClosedEvent, OrderPlacedEvent } from "./events/limitOrders";
 
 const MAX_TICK_SPACING = 354892;
 const LIMIT_ORDER_TICK_SPACING = 128;
