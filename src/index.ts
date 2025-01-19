@@ -92,6 +92,7 @@ const refreshAnalyticalTables = throttle(
   for await (const message of streamClient.streamData({
     filter: [
       Filter.make({
+        header: "always",
         events: EVENT_PROCESSORS.map((ep, ix) => ({
           id: ix + 1,
           address: ep.filter.fromAddress,
