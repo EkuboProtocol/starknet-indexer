@@ -176,7 +176,7 @@ const refreshAnalyticalTables = throttle(
             const eventKey: EventKey = {
               blockNumber,
               transactionIndex: event.transactionIndex!,
-              eventIndex: event.eventIndex!,
+              eventIndex: event.eventIndexInTransaction!,
               emitter: BigInt(event.address!),
               transactionHash: BigInt(event.transactionHash!),
             };
