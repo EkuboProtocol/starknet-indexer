@@ -19,6 +19,9 @@ declare namespace NodeJS {
 
     REFRESH_RATE_ANALYTICAL_VIEWS: string;
 
+    NETWORK: "mainnet" | "sepolia" | string;
+
+    APIBARA_URL: string;
     APIBARA_AUTH_TOKEN: string;
 
     PG_CONNECTION_STRING: string;

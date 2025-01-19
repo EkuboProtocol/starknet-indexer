@@ -13,7 +13,7 @@ const pool = new Pool({
   connectionTimeoutMillis: 1000,
 });
 
-const streamClient = createClient(StarknetStream, process.env["APIBARA_URL"]!);
+const streamClient = createClient(StarknetStream, process.env.APIBARA_URL!);
 
 function msToHumanShort(ms: number): string {
   const units = [
