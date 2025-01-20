@@ -13,7 +13,7 @@ const pool = new Pool({
   connectionTimeoutMillis: 1000,
 });
 
-const streamClient = createClient(StarknetStream, process.env.APIBARA_URL!);
+const streamClient = createClient(StarknetStream, process.env.APIBARA_URL);
 
 function msToHumanShort(ms: number): string {
   const units = [
@@ -161,35 +161,37 @@ const refreshAnalyticalTables = throttle(
         const isPending = message.data.production === "live";
 
         for (const block of message.data.data) {
-          const blockNumber = Number(block!.header!.blockNumber);
+          if (!block) continue;
+
+          const blockNumber = Number(block.header.blockNumber);
           deletedCount += await dao.deleteOldBlockNumbers(blockNumber);
 
-          const blockTime = block!.header!.timestamp!;
+          const blockTime = block.header.timestamp;
 
           await dao.insertBlock({
-            hash: BigInt(block!.header!.blockHash ?? 0),
-            number: block!.header!.blockNumber,
+            hash: BigInt(block.header.blockHash ?? 0),
+            number: block.header.blockNumber,
             time: blockTime,
           });
 
-          for (const event of block!.events) {
+          for (const event of block.events) {
             const eventKey: EventKey = {
               blockNumber,
-              transactionIndex: event.transactionIndex!,
-              eventIndex: event.eventIndexInTransaction!,
-              emitter: BigInt(event.address!),
-              transactionHash: BigInt(event.transactionHash!),
+              transactionIndex: event.transactionIndex,
+              eventIndex: event.eventIndexInTransaction,
+              emitter: BigInt(event.address),
+              transactionHash: BigInt(event.transactionHash),
             };
 
             // process each event sequentially through all the event processors in parallel
             // assumption is that none of the event processors operate on the same events, i.e. have the same filters
             // this assumption could be validated at runtime
             await Promise.all(
-              event.filterIds!.map(async (matchingFilterId) => {
+              event.filterIds.map(async (matchingFilterId) => {
                 eventsProcessed++;
                 const { parser, handle } =
                   EVENT_PROCESSORS[matchingFilterId - 1];
-                const parsed = parser(event.data!, 0).value;
+                const parsed = parser(event.data, 0).value;
 
                 await handle(dao, {
                   parsed: parsed as any,
