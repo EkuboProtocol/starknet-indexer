@@ -1,21 +1,12 @@
-import { v1alpha2 as starknet } from "@apibara/starknet";
-import { Parser } from "./parse";
+import type { Parser } from "./parse";
 import { DAO } from "./dao";
 
 export interface EventKey {
   blockNumber: number;
   transactionIndex: number;
   eventIndex: number;
-  fromAddress: bigint;
+  emitter: bigint;
   transactionHash: bigint;
-}
-
-export function eventKeyToId(key: EventKey): bigint {
-  return (
-    (BigInt(key.blockNumber) << 32n) +
-    (BigInt(key.transactionIndex) << 16n) +
-    BigInt(key.eventIndex)
-  );
 }
 
 export interface ParsedEventWithKey<T> {
@@ -25,8 +16,8 @@ export interface ParsedEventWithKey<T> {
 
 export interface EventProcessor<T> {
   filter: {
-    keys: starknet.IFieldElement[];
-    fromAddress: starknet.IFieldElement;
+    keys: `0x${string}`[];
+    fromAddress: `0x${string}`;
   };
 
   parser: Parser<T>;

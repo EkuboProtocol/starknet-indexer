@@ -1,11 +1,11 @@
 import {
   backwardsCompatibleParserAdditionalArgument,
   combineParsers,
-  GetParserType,
   parseAddress,
   parseU64,
 } from "../parse";
 import { parseBounds, parsePoolKey } from "./core";
+import type { GetParserType } from "../parse";
 
 export const parseLegacyPositionMintedEvent = combineParsers({
   id: { index: 0, parser: parseU64 },

@@ -5,28 +5,28 @@
   "main": "index.js",
   "description": "Indexes Ekubo data",
   "scripts": {
-    "start": "NETWORK=mainnet ts-node src/index.ts",
-    "start:sepolia": "NETWORK=sepolia ts-node src/index.ts",
-    "build": "tsup src/index.ts",
+    "start": "NETWORK=mainnet jiti src/index.ts",
+    "start:sepolia": "NETWORK=sepolia jiti src/index.ts",
     "test": "vitest"
   },
   "author": "Moody Salem",
+  "type": "module",
+  "engines": {
+    "node": "^22.10.0"
+  },
   "devDependencies": {
-    "@types/pg": "^8.10.2",
-    "ts-node": "^10.9.1",
-    "tsup": "^7.1.0",
-    "typescript": "^5.1.6",
-    "vitest": "^1.5.3"
+    "@types/node": "^22.10.7",
+    "@types/pg": "^8.11.10",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.2"
   },
   "dependencies": {
-    "@apibara/protocol": "^0.4.8",
-    "@apibara/starknet": "^0.4.0",
-    "dotenv": "^16.3.1",
-    "p-queue-cjs": "^7.3.4",
-    "pedersen-fast": "^0.4.0",
-    "pg": "^8.11.1",
-    "starknet": "^6.9.0",
+    "@apibara/protocol": "^2.0.0-beta.36",
+    "@apibara/starknet": "^2.0.0-beta.36",
+    "dotenv": "^16.4.7",
+    "jiti": "^2.4.2",
+    "pg": "^8.13.1",
     "tadaaa": "^1.0.1",
-    "winston": "^3.10.0"
+    "winston": "^3.17.0"
   }
 }

@@ -1,6 +1,5 @@
 import {
   combineParsers,
-  GetParserType,
   parseAddress,
   parseFelt252,
   parseI129,
@@ -8,6 +7,7 @@ import {
   parseU64,
 } from "../parse";
 import { parseDelta } from "./core";
+import type { GetParserType } from "../parse";
 
 export const parseOrderKey = combineParsers({
   sell_token: { index: 0, parser: parseAddress },

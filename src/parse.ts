@@ -1,8 +1,6 @@
-import { FieldElement, v1alpha2 as starknet } from "@apibara/starknet";
-
 export interface Parser<T> {
   (
-    data: starknet.IFieldElement[],
+    data: readonly `0x${string}`[],
     startingFrom: number,
   ): {
     value: T;
@@ -12,7 +10,7 @@ export interface Parser<T> {
 
 export function parseSpanOf<T>(type: Parser<T>): Parser<T[]> {
   return (data, startingFrom) => {
-    const numElements = Number(FieldElement.toBigInt(data[startingFrom]));
+    const numElements = Number(data[startingFrom]);
 
     const elements: T[] = [];
     let index = startingFrom + 1;
@@ -32,7 +30,7 @@ export function parseSpanOf<T>(type: Parser<T>): Parser<T[]> {
 
 export const parseU128: Parser<bigint> = (data, startingFrom) => {
   return {
-    value: FieldElement.toBigInt(data[startingFrom]),
+    value: BigInt(data[startingFrom]),
     next: startingFrom + 1,
   };
 };
@@ -42,8 +40,7 @@ export const parseU64 = parseU128;
 export const parseU256: Parser<bigint> = (data, startingFrom) => {
   return {
     value:
-      FieldElement.toBigInt(data[startingFrom]) +
-      FieldElement.toBigInt(data[startingFrom + 1]) * 2n ** 128n,
+      BigInt(data[startingFrom]) + BigInt(data[startingFrom + 1]) * 2n ** 128n,
     next: startingFrom + 2,
   };
 };
@@ -51,8 +48,8 @@ export const parseU256: Parser<bigint> = (data, startingFrom) => {
 export const parseI129: Parser<bigint> = (data, startingFrom) => {
   return {
     value:
-      FieldElement.toBigInt(data[startingFrom]) *
-      (FieldElement.toBigInt(data[startingFrom + 1]) !== 0n ? -1n : 1n),
+      BigInt(data[startingFrom]) *
+      (BigInt(data[startingFrom + 1]) !== 0n ? -1n : 1n),
     next: startingFrom + 2,
   };
 };
@@ -62,14 +59,14 @@ export type GetParserType<T extends Parser<any>> =
 
 export const parseU8: Parser<number> = (data, startingFrom) => {
   return {
-    value: Number(FieldElement.toBigInt(data[startingFrom])),
+    value: Number(data[startingFrom]),
     next: startingFrom + 1,
   };
 };
 
 export const parseFelt252: Parser<bigint> = (data, startingFrom) => {
   return {
-    value: FieldElement.toBigInt(data[startingFrom]),
+    value: BigInt(data[startingFrom]),
     next: startingFrom + 1,
   };
 };
@@ -77,7 +74,7 @@ export const parseFelt252: Parser<bigint> = (data, startingFrom) => {
 export const parseAddress: Parser<bigint> = parseFelt252;
 
 export const parseBoolean: Parser<boolean> = (data, startingFrom) => {
-  let num = FieldElement.toBigInt(data[startingFrom]);
+  let num = BigInt(data[startingFrom]);
   let value: boolean;
   if (num === 0n) {
     value = false;
@@ -159,16 +156,20 @@ export const parseUint8Array: Parser<Uint8Array> = (data, startingFrom) => {
     next,
   };
 };
+
 const parseByteArrayWords = parseSpanOf(parseUint8Array);
+
 export const parseByteArray: Parser<string> = (data, startingFrom) => {
   const words = parseByteArrayWords(data, startingFrom);
 
   const value = new TextDecoder().decode(
-    Buffer.concat([
-      ...words.value,
-      // pending word
-      parseUint8Array(data, words.next).value,
-    ]),
+    new Uint8Array(
+      Buffer.concat([
+        ...words.value,
+        // pending word
+        parseUint8Array(data, words.next).value,
+      ]),
+    ),
   );
 
   return {

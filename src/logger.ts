@@ -19,7 +19,7 @@ process.on("uncaughtException", function (err) {
   process.exit(1); // Exit the process with failure
 });
 
-process.on("unhandledRejection", function (err, promise) {
+process.on("unhandledRejection", function (err) {
   logger.error("Unhandled promise rejection", err);
   process.exit(1); // Exit the process with failure
 });

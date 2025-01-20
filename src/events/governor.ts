@@ -1,7 +1,6 @@
 import {
   backwardsCompatibleParserAdditionalArgument,
   combineParsers,
-  GetParserType,
   parseAddress,
   parseBoolean,
   parseByteArray,
@@ -10,6 +9,7 @@ import {
   parseU128,
   parseU64,
 } from "../parse";
+import type { GetParserType } from "../parse";
 
 export const parseCall = combineParsers({
   to: { index: 0, parser: parseAddress },
