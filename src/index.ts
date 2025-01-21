@@ -202,9 +202,7 @@ const refreshAnalyticalTables = throttle(
           }
 
           // only write endCursor if cursor is not present
-          await dao.writeCursor(
-            (message.data.cursor ?? message.data.endCursor)!,
-          );
+          await dao.writeCursor(message.data.cursor ?? message.data.endCursor);
 
           // refresh operational views at the end of the batch
           if ((isPending && eventsProcessed > 0) || deletedCount > 0) {
