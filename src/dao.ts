@@ -2598,512 +2598,564 @@ export class DAO {
 
   public async createOHLCFunction(): Promise<void> {
     await this.pg.query(`
-        CREATE OR REPLACE FUNCTION universal_tick_oracle_ohlc(    
-          interval_seconds INTEGER,    
-          lookback_seconds INTEGER,    
-          p_target_token0 NUMERIC,    
-          p_target_token1 NUMERIC,    
-          p_oracle_token NUMERIC    
-        )    
-        RETURNS TABLE (    
-          interval_start BIGINT,    
-          out_token0 NUMERIC,    
-          out_token1 NUMERIC,    
-          open_price NUMERIC,    
-          high_price NUMERIC,    
-          low_price NUMERIC,    
-          close_price NUMERIC,    
-          data_points BIGINT,    
-          is_real_interval BOOLEAN,    
-          price_source TEXT    
-        )  
-        LANGUAGE plpgsql AS $$  
-    
-        DECLARE    
-          v_is_direct_pair BOOLEAN;    
-          v_fixed_now BIGINT;    
-          v_invert_price BOOLEAN;    
-          v_start_time BIGINT;  
-          v_window_start BIGINT;  
-        BEGIN    
-
-    SELECT MAX(snapshot_block_timestamp) INTO v_fixed_now
-    FROM oracle_snapshots;
-          -- Calculate the start time for our data window  
-          v_start_time := v_fixed_now - lookback_seconds;  
-          -- Calculate the start time for HLOC calculations  
-          v_window_start := v_fixed_now - lookback_seconds;  
-          
+      CREATE OR REPLACE FUNCTION universal_tick_oracle_ohlc(
+          interval_seconds   INTEGER,
+          end_time           INTEGER,
+          num_intervals      INTEGER,
+          p_target_token0    NUMERIC,
+          p_target_token1    NUMERIC,
+          p_oracle_token     NUMERIC
+      )
+      RETURNS TABLE (
+          interval_start     BIGINT,
+          out_token0         NUMERIC,
+          out_token1         NUMERIC,
+          open_price         NUMERIC,
+          high_price         NUMERIC,
+          low_price          NUMERIC,
+          close_price        NUMERIC,
+          data_points        BIGINT,
+          is_real_interval   BOOLEAN,
+          price_source       TEXT
+      )
+      LANGUAGE plpgsql AS
+      $$
+      DECLARE
+          v_is_direct_pair  BOOLEAN;        
+          v_invert_price    BOOLEAN;    
+          v_start_time      BIGINT;  
+      BEGIN
+          -- Calculate the start time for our data window
+          v_start_time := end_time - (num_intervals * interval_seconds);
+  
           DROP TABLE IF EXISTS temp_filtered_snapshots, temp_t0_first_interval, temp_t1_first_interval;
-          
-          -- Create the temporary table first
-    CREATE TEMPORARY TABLE temp_filtered_snapshots (  
-            snapshot_block_timestamp BIGINT,  
-            snapshot_tick_cumulative NUMERIC,  
-            token0 NUMERIC,  
-            token1 NUMERIC  
-          ) ON COMMIT DROP;  
-
-          -- Check for same token case first    
-          IF p_target_token0 = p_target_token1 THEN    
-            RETURN QUERY    
-            SELECT     
-              generate_series(v_start_time, v_fixed_now, interval_seconds)::BIGINT,  
-              p_target_token0,  
-              p_target_token1,  
-              1.0::NUMERIC,  
-              1.0::NUMERIC,  
-              1.0::NUMERIC,  
-              1.0::NUMERIC,  
-              0::BIGINT,  
-              false,  
-              'same_token'::TEXT;  
-            RETURN;    
-          END IF;   
-          
-          -- Determine if direct pair and if we need to invert the price    
-          v_is_direct_pair := (p_target_token0 = p_oracle_token OR p_target_token1 = p_oracle_token);    
-          v_invert_price := (p_target_token0 = p_oracle_token);   
-          
-          -- Modified to only insert data within our window  
-          INSERT INTO temp_filtered_snapshots         
-          SELECT   
-            snapshot_block_timestamp,  
-            snapshot_tick_cumulative,  
-            token0,  
-            token1  
-          FROM oracle_snapshots  
-          WHERE snapshot_block_timestamp >= v_window_start  
-            AND snapshot_block_timestamp <= v_fixed_now  
-            AND snapshot_tick_cumulative IS NOT NULL  
-            AND (  
-              (v_is_direct_pair AND (  
-                (v_invert_price AND token1 = p_target_token0 AND token0 = p_target_token1)  
-                OR (NOT v_invert_price AND token0 = p_target_token0 AND token1 = p_target_token1)  
-              ))  
-              OR  
-              (NOT v_is_direct_pair AND (  
-                (token0 = p_target_token0 AND token1 = p_oracle_token)  
-                OR (token0 = p_target_token1 AND token1 = p_oracle_token)  
-              ))  
-            );  
-
-          CREATE INDEX idx_temp_filtered_timestamp   
-            ON temp_filtered_snapshots(snapshot_block_timestamp);  
-          CREATE INDEX idx_temp_filtered_tokens   
-            ON temp_filtered_snapshots(token0, token1);  
-            
-          CREATE TEMP TABLE temp_t0_first_interval AS  
-          SELECT MIN(calc_interval) AS first_interval  
-          FROM (  
-            SELECT (snapshot_block_timestamp / interval_seconds) * interval_seconds AS calc_interval  
-            FROM temp_filtered_snapshots  
-            WHERE token0 = p_target_token0   
-            AND token1 = p_oracle_token  
-            AND snapshot_block_timestamp >= v_window_start  
-            GROUP BY calc_interval  
-            HAVING COUNT(*) >= 1  
-          ) sub;  
-
-          CREATE TEMP TABLE temp_t1_first_interval AS  
-          SELECT MIN(calc_interval) AS first_interval  
-          FROM (  
-            SELECT (snapshot_block_timestamp / interval_seconds) * interval_seconds AS calc_interval  
-            FROM temp_filtered_snapshots  
-            WHERE token0 = p_target_token1   
-            AND token1 = p_oracle_token  
-            AND snapshot_block_timestamp >= v_window_start  
-            GROUP BY calc_interval  
-            HAVING COUNT(*) >= 1  
-          ) sub;  
-
-          IF NOT v_is_direct_pair THEN    
-            -- Indirect pair logic    
-            RETURN QUERY     
-            
-            WITH first_real_interval AS (    
-              SELECT GREATEST(    
-                COALESCE((SELECT first_interval FROM temp_t0_first_interval), v_fixed_now),    
-                COALESCE((SELECT first_interval FROM temp_t1_first_interval), v_fixed_now)    
-            ) as first_interval    
-        ),  
-            
-        t0_ohlc AS (    
-            SELECT     
-                subq.interval_start as ts_interval_start,    
-                subq.out_token0,    
-                subq.out_token1,    
-                subq.open_price,    
-                subq.high_price,    
-                subq.low_price,    
-                subq.close_price,    
-                subq.data_points,    
-                subq.is_real_interval,    
-                subq.price_source    
-            FROM universal_tick_oracle_ohlc(    
-                interval_seconds,    
-                lookback_seconds,    
-                p_target_token0,    
-                p_oracle_token,    
-                p_oracle_token    
-            ) subq    
-            WHERE subq.interval_start >= v_window_start  
-        ),  
-            
-        t1_ohlc AS (    
-            SELECT     
-                subq.interval_start as ts_interval_start,    
-                subq.out_token0,    
-                subq.out_token1,    
-                subq.open_price,    
-                subq.high_price,    
-                subq.low_price,    
-                subq.close_price,    
-                subq.data_points,    
-                subq.is_real_interval,    
-                subq.price_source    
-            FROM universal_tick_oracle_ohlc(    
-                interval_seconds,    
-                lookback_seconds,    
-                p_target_token1,    
-                p_oracle_token,    
-                p_oracle_token    
-            ) subq  
-            WHERE subq.interval_start >= v_window_start  
-        ),  
-        all_intervals AS (  
-            SELECT DISTINCT i.ts_interval_start  
-            FROM (  
-                SELECT ts_interval_start FROM t0_ohlc  
-                UNION  
-                SELECT ts_interval_start FROM t1_ohlc  
-            ) i  
-            WHERE i.ts_interval_start >= v_window_start  
-        ),  
-        first_complete_interval AS (  
-            SELECT MIN(i.ts_interval_start) as first_complete_ts  
-            FROM all_intervals i  
-            INNER JOIN t0_ohlc t0 ON i.ts_interval_start = t0.ts_interval_start  
-            INNER JOIN t1_ohlc t1 ON i.ts_interval_start = t1.ts_interval_start  
-            WHERE t0.is_real_interval AND t1.is_real_interval  
-        ),  
-        last_available_prices AS (  
-            SELECT  
-                i.ts_interval_start,  
-                FIRST_VALUE(t0.close_price) OVER (  
-                    PARTITION BY t.grp_t0  
-                    ORDER BY i.ts_interval_start  
-                ) as last_t0_price,  
-                FIRST_VALUE(t1.close_price) OVER (  
-                    PARTITION BY t.grp_t1  
-                    ORDER BY i.ts_interval_start  
-                ) as last_t1_price  
-            FROM all_intervals i  
-            LEFT JOIN (  
-                SELECT   
-                    ai.ts_interval_start,  
-                    SUM(CASE WHEN t0.is_real_interval THEN 1 ELSE 0 END) OVER (ORDER BY ai.ts_interval_start) as grp_t0,  
-                    SUM(CASE WHEN t1.is_real_interval THEN 1 ELSE 0 END) OVER (ORDER BY ai.ts_interval_start) as grp_t1  
-                FROM all_intervals ai  
-                LEFT JOIN t0_ohlc t0 ON ai.ts_interval_start = t0.ts_interval_start  
-                LEFT JOIN t1_ohlc t1 ON ai.ts_interval_start = t1.ts_interval_start  
-            ) t ON i.ts_interval_start = t.ts_interval_start  
-            LEFT JOIN t0_ohlc t0 ON i.ts_interval_start = t0.ts_interval_start AND t0.is_real_interval  
-            LEFT JOIN t1_ohlc t1 ON i.ts_interval_start = t1.ts_interval_start AND t1.is_real_interval  
-            WHERE i.ts_interval_start >= (SELECT first_complete_ts FROM first_complete_interval)  
-        ),  
-        real_intervals AS (    
-            SELECT     
-                i.ts_interval_start,  
-                CASE   
-                    WHEN t0.is_real_interval AND t1.is_real_interval THEN t1.open_price / NULLIF(t0.open_price, 0)  
-                    WHEN t0.is_real_interval THEN lap.last_t1_price / NULLIF(t0.open_price, 0)  
-                    WHEN t1.is_real_interval THEN t1.open_price / NULLIF(lap.last_t0_price, 0)  
-                END as real_open,  
-                CASE   
-                    WHEN t0.is_real_interval AND t1.is_real_interval THEN t1.high_price / NULLIF(t0.low_price, 0)  
-                    WHEN t0.is_real_interval THEN lap.last_t1_price / NULLIF(t0.low_price, 0)  
-                    WHEN t1.is_real_interval THEN t1.high_price / NULLIF(lap.last_t0_price, 0)  
-                END as real_high,  
-                CASE   
-                    WHEN t0.is_real_interval AND t1.is_real_interval THEN t1.low_price / NULLIF(t0.high_price, 0)  
-                    WHEN t0.is_real_interval THEN lap.last_t1_price / NULLIF(t0.high_price, 0)  
-                    WHEN t1.is_real_interval THEN t1.low_price / NULLIF(lap.last_t0_price, 0)  
-                END as real_low,  
-                CASE   
-                    WHEN t0.is_real_interval AND t1.is_real_interval THEN t1.close_price / NULLIF(t0.close_price, 0)  
-                    WHEN t0.is_real_interval THEN lap.last_t1_price / NULLIF(t0.close_price, 0)  
-                    WHEN t1.is_real_interval THEN t1.close_price / NULLIF(lap.last_t0_price, 0)  
-                END as real_close,  
-                CASE   
-                    WHEN t0.is_real_interval OR t1.is_real_interval THEN true  
-                    ELSE false  
-                END as is_real  
-            FROM all_intervals i  
-            LEFT JOIN t0_ohlc t0 ON i.ts_interval_start = t0.ts_interval_start  
-            LEFT JOIN t1_ohlc t1 ON i.ts_interval_start = t1.ts_interval_start  
-            LEFT JOIN last_available_prices lap ON i.ts_interval_start = lap.ts_interval_start  
-            WHERE t0.is_real_interval OR t1.is_real_interval  
-        ),  
-        last_real_prices AS (    
-            SELECT     
-                i.ts_interval_start,    
-                (    
-                    SELECT real_close    
-                    FROM real_intervals ri     
-                    WHERE ri.ts_interval_start = (    
-                        SELECT MAX(ts_interval_start)     
-                        FROM real_intervals ri2    
-                        WHERE ri2.ts_interval_start <= i.ts_interval_start    
-                    )    
-                ) as last_real_price,    
-                EXISTS (    
-                    SELECT 1     
-                    FROM real_intervals ri    
-                    WHERE ri.ts_interval_start = i.ts_interval_start    
-                ) as is_real_interval    
-            FROM all_intervals i    
-            WHERE i.ts_interval_start >= (SELECT first_complete_ts FROM first_complete_interval)    
-        )    
-        SELECT    
-            lrp.ts_interval_start as interval_start,    
-            p_target_token0 AS out_token0,    
-            p_target_token1 AS out_token1,    
-            COALESCE(ri.real_open, lrp.last_real_price) as open_price,    
-            COALESCE(ri.real_high, lrp.last_real_price) as high_price,    
-            COALESCE(ri.real_low, lrp.last_real_price) as low_price,    
-            COALESCE(ri.real_close, lrp.last_real_price) as close_price,    
-            CASE     
-                WHEN ri.is_real THEN GREATEST(  
-                    CASE WHEN t0.is_real_interval THEN t0.data_points ELSE 0 END,  
-                    CASE WHEN t1.is_real_interval THEN t1.data_points ELSE 0 END  
-                )  
-                ELSE 0    
-            END as data_points,    
-            lrp.is_real_interval,    
-            'indirect'::TEXT AS price_source    
-        FROM last_real_prices lrp    
-        LEFT JOIN real_intervals ri ON lrp.ts_interval_start = ri.ts_interval_start    
-        LEFT JOIN t0_ohlc t0 ON lrp.ts_interval_start = t0.ts_interval_start    
-        LEFT JOIN t1_ohlc t1 ON lrp.ts_interval_start = t1.ts_interval_start    
-        ORDER BY lrp.ts_interval_start;  
-    ELSE    
-        -- Direct pair logic    
-        RETURN QUERY  
-        WITH check_snapshots AS (  
-            SELECT EXISTS (  
-                SELECT 1  
-                FROM temp_filtered_snapshots os  
-                WHERE snapshot_block_timestamp BETWEEN v_window_start AND v_fixed_now  
-                  AND ((v_invert_price AND os.token1 = p_target_token0 AND os.token0 = p_target_token1)  
-                       OR (NOT v_invert_price AND os.token0 = p_target_token0 AND os.token1 = p_target_token1))  
-                  AND snapshot_tick_cumulative IS NOT NULL  
-                LIMIT 1  
-            ) as has_data  
-        ),  
-        first_real_interval AS (  
-            SELECT  
-                MIN(vs_interval_start) as first_interval_start,  
-                MIN(snapshot_block_timestamp) as first_timestamp  
-            FROM (  
-                SELECT  
-                    snapshot_block_timestamp,  
-                    (snapshot_block_timestamp / interval_seconds) * interval_seconds AS vs_interval_start  
-                FROM temp_filtered_snapshots os  
-                WHERE snapshot_block_timestamp BETWEEN v_window_start AND v_fixed_now  
-                  AND ((v_invert_price AND os.token1 = p_target_token0 AND os.token0 = p_target_token1)  
-                       OR (NOT v_invert_price AND os.token0 = p_target_token0 AND os.token1 = p_target_token1))  
-                  AND snapshot_tick_cumulative IS NOT NULL  
-                GROUP BY snapshot_block_timestamp, vs_interval_start  
-                HAVING COUNT(*) > 0  
-            ) first_data  
-        ),    
-        valid_snapshots AS (    
-            SELECT    
-                snapshot_block_timestamp,    
-                CASE WHEN v_invert_price THEN -snapshot_tick_cumulative     
-                     ELSE snapshot_tick_cumulative END as snapshot_tick_cumulative,    
-                (snapshot_block_timestamp / interval_seconds) * interval_seconds AS vs_interval_start    
-            FROM temp_filtered_snapshots os    
-            WHERE snapshot_block_timestamp >= (SELECT first_timestamp FROM first_real_interval)    
-              AND ((v_invert_price AND os.token1 = p_target_token0 AND os.token0 = p_target_token1)    
-                   OR (NOT v_invert_price AND os.token0 = p_target_token0 AND os.token1 = p_target_token1))    
-              AND snapshot_tick_cumulative IS NOT NULL    
-            ORDER BY snapshot_block_timestamp    
-        ),    
-        tick_rates AS (    
-            SELECT     
-                snapshot_block_timestamp,    
-                vs_interval_start,    
-                snapshot_tick_cumulative,    
-                (snapshot_tick_cumulative - LAG(snapshot_tick_cumulative) OVER (ORDER BY snapshot_block_timestamp)) /     
-                NULLIF((snapshot_block_timestamp - LAG(snapshot_block_timestamp) OVER (ORDER BY snapshot_block_timestamp)), 0) as tick_rate    
-            FROM valid_snapshots    
-        ),    
-        interval_metrics AS (    
-            SELECT     
-                vs_interval_start as im_interval_start,    
-                COUNT(*) as data_points,    
-                CASE     
-                    WHEN COUNT(*) = 1 THEN MAX(tick_rate)  -- Single point    
-                    ELSE MIN(tick_rate)                    -- Multiple points    
-                END as low_tick,    
-                CASE     
-                    WHEN COUNT(*) = 1 THEN MAX(tick_rate)  -- Single point    
-                    ELSE MAX(tick_rate)                    -- Multiple points    
-                END as high_tick,    
-                MIN(CASE WHEN rn = 1 THEN tick_rate END) as first_tick,    
-                MAX(CASE WHEN rn = max_rn THEN tick_rate END) as last_tick    
-            FROM (    
-                SELECT     
-                    tr.*,    
-                    ROW_NUMBER() OVER (PARTITION BY tr.vs_interval_start ORDER BY tr.snapshot_block_timestamp) as rn,    
-                    COUNT(*) OVER (PARTITION BY tr.vs_interval_start) as max_rn    
-                FROM tick_rates tr    
-                WHERE tick_rate IS NOT NULL    
-            ) ranked_ticks    
-            GROUP BY vs_interval_start    
-            HAVING COUNT(*) > 0    
-        ),    
-        all_intervals AS (    
-            SELECT     
-                i.interval_start,    
-                i.interval_start + interval_seconds as interval_end,    
-                LAG(i.interval_start) OVER (ORDER BY i.interval_start) as prev_interval_start    
-            FROM (    
-                SELECT generate_series(    
-                    (SELECT first_interval_start FROM first_real_interval),    
-                    v_fixed_now,    
-                    interval_seconds    
-                ) as interval_start    
-            ) i    
-        ),    
-        interval_boundaries AS (    
-            SELECT     
-                ai.interval_start,    
-                ai.interval_end,    
-                vs_before.snapshot_block_timestamp as before_start_timestamp,    
-                vs_before.snapshot_tick_cumulative as before_start_cumulative,    
-                vs_after.snapshot_block_timestamp as after_end_timestamp,    
-                vs_after.snapshot_tick_cumulative as after_end_cumulative    
-            FROM all_intervals ai    
-            CROSS JOIN LATERAL (    
-                SELECT snapshot_block_timestamp, snapshot_tick_cumulative    
-                FROM valid_snapshots    
-                WHERE snapshot_block_timestamp <= ai.interval_start    
-                ORDER BY snapshot_block_timestamp DESC    
-                LIMIT 1    
-            ) vs_before    
-            CROSS JOIN LATERAL (    
-                SELECT snapshot_block_timestamp, snapshot_tick_cumulative    
-                FROM valid_snapshots    
-                WHERE snapshot_block_timestamp > ai.interval_end    
-                ORDER BY snapshot_block_timestamp ASC    
-                LIMIT 1    
-            ) vs_after    
-        ),    
-        prev_interval_data AS (    
-            SELECT     
-                ai.interval_start,    
-                (    
-                    SELECT last_tick    
-                    FROM interval_metrics im2    
-                    WHERE im2.im_interval_start = (    
-                        SELECT MAX(im3.im_interval_start)    
-                        FROM interval_metrics im3    
-                        WHERE im3.im_interval_start < ai.interval_start  
-                          AND im3.im_interval_start >= (SELECT first_interval_start FROM first_real_interval)    
-                    )    
-                ) as prev_close_tick    
-            FROM all_intervals ai    
-        ),    
-        interval_combined AS (    
-            SELECT     
-                ai.interval_start,    
-                COALESCE(im.data_points, 0) as data_points,    
-                COALESCE(im.data_points > 0, false) as is_real_interval,    
-                CASE    
-                    WHEN im.data_points > 0 THEN     
-                        im.first_tick    
-                    WHEN ai.interval_start >= (SELECT first_interval_start FROM first_real_interval) THEN     
-                        pid.prev_close_tick    
-                END as open_tick,    
-                CASE    
-                    WHEN im.data_points = 1 THEN    
-                        im.first_tick    
-                    WHEN im.data_points > 1 THEN     
-                        im.high_tick    
-                    WHEN ai.interval_start >= (SELECT first_interval_start FROM first_real_interval) THEN     
-                        pid.prev_close_tick    
-                END as high_tick,    
-                CASE    
-                    WHEN im.data_points = 1 THEN    
-                        im.first_tick    
-                    WHEN im.data_points > 1 THEN     
-                        im.low_tick    
-                    WHEN ai.interval_start >= (SELECT first_interval_start FROM first_real_interval) THEN     
-                        pid.prev_close_tick    
-                END as low_tick,    
-                CASE    
-                    WHEN im.data_points > 0 THEN     
-                        -- Use linear interpolation for close price    
-                        CASE     
-                            WHEN ib.before_start_timestamp IS NOT NULL AND ib.after_end_timestamp IS NOT NULL THEN    
-                                (ib.after_end_cumulative::numeric - ib.before_start_cumulative::numeric) /    
-                                NULLIF((ib.after_end_timestamp::numeric - ib.before_start_timestamp::numeric), 0)    
-                            ELSE im.last_tick    
-                        END    
-                    WHEN ai.interval_start >= (SELECT first_interval_start FROM first_real_interval) THEN     
-                        pid.prev_close_tick    
-                END as twap_tick    
-            FROM all_intervals ai    
-            LEFT JOIN interval_metrics im ON ai.interval_start = im.im_interval_start    
-            LEFT JOIN interval_boundaries ib ON ai.interval_start = ib.interval_start    
-            LEFT JOIN prev_interval_data pid ON ai.interval_start = pid.interval_start    
-        )    
-        SELECT     
-            CASE     
-                WHEN NOT (SELECT has_data FROM check_snapshots) THEN v_fixed_now::BIGINT    
-                ELSE ic.interval_start     
-            END AS interval_start,    
-            p_target_token0 AS out_token0,    
-            p_target_token1 AS out_token1,    
-            CASE     
-                WHEN NOT (SELECT has_data FROM check_snapshots) THEN 1.0::NUMERIC    
-                WHEN ic.open_tick IS NOT NULL THEN power(1.000001, ic.open_tick)     
-            END AS open_price,    
-            CASE     
-                WHEN NOT (SELECT has_data FROM check_snapshots) THEN 1.0::NUMERIC    
-                WHEN ic.high_tick IS NOT NULL THEN power(1.000001, ic.high_tick)     
-            END AS high_price,    
-            CASE     
-                WHEN NOT (SELECT has_data FROM check_snapshots) THEN 1.0::NUMERIC    
-                WHEN ic.low_tick IS NOT NULL THEN power(1.000001, ic.low_tick)     
-            END AS low_price,    
-            CASE     
-                WHEN NOT (SELECT has_data FROM check_snapshots) THEN 1.0::NUMERIC    
-                WHEN ic.twap_tick IS NOT NULL THEN power(1.000001, ic.twap_tick)     
-            END AS close_price,    
-            ic.data_points,    
-            ic.is_real_interval,    
-            CASE     
-                WHEN NOT (SELECT has_data FROM check_snapshots) THEN 'initialization'::TEXT    
-                ELSE 'direct'::TEXT     
-            END AS price_source    
-        FROM interval_combined ic    
-        WHERE (SELECT has_data FROM check_snapshots) = FALSE    
-           OR (    
-               -- Only include intervals from first real data onwards    
-               ic.interval_start >= (SELECT first_interval_start FROM first_real_interval)    
-               AND ic.open_tick IS NOT NULL    
-               AND ic.high_tick IS NOT NULL    
-               AND ic.low_tick IS NOT NULL    
-               AND ic.twap_tick IS NOT NULL    
-           )    
-        ORDER BY interval_start;    
-    END IF;   
-END;    
-$$;
+  
+          CREATE TEMPORARY TABLE temp_filtered_snapshots (
+              snapshot_block_timestamp BIGINT,
+              snapshot_tick_cumulative NUMERIC,
+              token0 NUMERIC,
+              token1 NUMERIC
+          ) ON COMMIT DROP;
+  
+          -- If both target tokens are the same:
+          IF p_target_token0 = p_target_token1 THEN
+              RETURN QUERY
+              SELECT
+                  generate_series(v_start_time, end_time, interval_seconds)::BIGINT,
+                  p_target_token0,
+                  p_target_token1,
+                  1.0::NUMERIC,
+                  1.0::NUMERIC,
+                  1.0::NUMERIC,
+                  1.0::NUMERIC,
+                  0::BIGINT,
+                  false,
+                  'same_token'::TEXT;
+              RETURN;
+          END IF;
+  
+          -- Determine if direct pair and if we need to invert the price
+          v_is_direct_pair := (p_target_token0 = p_oracle_token OR p_target_token1 = p_oracle_token);
+          v_invert_price   := (p_target_token0 = p_oracle_token);
+  
+          -- Populate temp_filtered_snapshots
+          INSERT INTO temp_filtered_snapshots
+          SELECT
+              snapshot_block_timestamp,
+              snapshot_tick_cumulative,
+              token0,
+              token1
+          FROM oracle_snapshots
+          WHERE snapshot_block_timestamp BETWEEN v_start_time AND end_time
+            AND snapshot_tick_cumulative IS NOT NULL
+            AND (
+                 (v_is_direct_pair AND (
+                     (v_invert_price AND token1 = p_target_token0 AND token0 = p_target_token1)
+                     OR (NOT v_invert_price AND token0 = p_target_token0 AND token1 = p_target_token1)
+                 ))
+                 OR
+                 (NOT v_is_direct_pair AND (
+                     (token0 = p_target_token0 AND token1 = p_oracle_token)
+                     OR (token0 = p_target_token1 AND token1 = p_oracle_token)
+                 ))
+            );
+  
+          CREATE INDEX idx_temp_filtered_timestamp
+              ON temp_filtered_snapshots(snapshot_block_timestamp);
+  
+          CREATE INDEX idx_temp_filtered_tokens
+              ON temp_filtered_snapshots(token0, token1);
+  
+          -- Record the first interval for each token path
+          CREATE TEMP TABLE temp_t0_first_interval AS
+          SELECT MIN(calc_interval) AS first_interval
+          FROM (
+              SELECT (snapshot_block_timestamp / interval_seconds) * interval_seconds AS calc_interval
+              FROM temp_filtered_snapshots
+              WHERE token0 = p_target_token0
+                AND token1 = p_oracle_token
+                AND snapshot_block_timestamp >= v_start_time
+              GROUP BY calc_interval
+              HAVING COUNT(*) >= 1
+          ) sub;
+  
+          CREATE TEMP TABLE temp_t1_first_interval AS
+          SELECT MIN(calc_interval) AS first_interval
+          FROM (
+              SELECT (snapshot_block_timestamp / interval_seconds) * interval_seconds AS calc_interval
+              FROM temp_filtered_snapshots
+              WHERE token0 = p_target_token1
+                AND token1 = p_oracle_token
+                AND snapshot_block_timestamp >= v_start_time
+              GROUP BY calc_interval
+              HAVING COUNT(*) >= 1
+          ) sub;
+  
+          -- Indirect pair logic
+          IF NOT v_is_direct_pair THEN
+              RETURN QUERY
+              WITH
+              first_real_interval AS (
+                  SELECT GREATEST(
+                      COALESCE((SELECT first_interval FROM temp_t0_first_interval), end_time),
+                      COALESCE((SELECT first_interval FROM temp_t1_first_interval), end_time)
+                  ) AS first_interval
+              ),
+              t0_ohlc AS (
+                  SELECT
+                      subq.interval_start       AS ts_interval_start,
+                      subq.out_token0,
+                      subq.out_token1,
+                      subq.open_price,
+                      subq.high_price,
+                      subq.low_price,
+                      subq.close_price,
+                      subq.data_points,
+                      subq.is_real_interval,
+                      subq.price_source
+                  FROM universal_tick_oracle_ohlc(
+                      interval_seconds,
+                      end_time,
+                      num_intervals,
+                      p_target_token0,
+                      p_oracle_token,
+                      p_oracle_token
+                  ) subq
+                  WHERE subq.interval_start >= v_start_time
+              ),
+              t1_ohlc AS (
+                  SELECT
+                      subq.interval_start       AS ts_interval_start,
+                      subq.out_token0,
+                      subq.out_token1,
+                      subq.open_price,
+                      subq.high_price,
+                      subq.low_price,
+                      subq.close_price,
+                      subq.data_points,
+                      subq.is_real_interval,
+                      subq.price_source
+                  FROM universal_tick_oracle_ohlc(
+                      interval_seconds,
+                      end_time,
+                      num_intervals,
+                      p_target_token1,
+                      p_oracle_token,
+                      p_oracle_token
+                  ) subq
+                  WHERE subq.interval_start >= v_start_time
+              ),
+              all_intervals AS (
+                  SELECT DISTINCT i.ts_interval_start
+                  FROM (
+                      SELECT ts_interval_start FROM t0_ohlc
+                      UNION
+                      SELECT ts_interval_start FROM t1_ohlc
+                  ) i
+                  WHERE i.ts_interval_start >= v_start_time
+              ),
+              first_complete_interval AS (
+                  SELECT MIN(i.ts_interval_start) AS first_complete_ts
+                  FROM all_intervals i
+                  INNER JOIN t0_ohlc t0 ON i.ts_interval_start = t0.ts_interval_start
+                  INNER JOIN t1_ohlc t1 ON i.ts_interval_start = t1.ts_interval_start
+                  WHERE t0.is_real_interval AND t1.is_real_interval
+              ),
+              last_available_prices AS (
+                  SELECT
+                      i.ts_interval_start,
+                      FIRST_VALUE(t0.close_price) OVER (
+                          PARTITION BY t.grp_t0
+                          ORDER BY i.ts_interval_start
+                      ) AS last_t0_price,
+                      FIRST_VALUE(t1.close_price) OVER (
+                          PARTITION BY t.grp_t1
+                          ORDER BY i.ts_interval_start
+                      ) AS last_t1_price
+                  FROM all_intervals i
+                  LEFT JOIN (
+                      SELECT
+                          ai.ts_interval_start,
+                          SUM(CASE WHEN t0.is_real_interval THEN 1 ELSE 0 END)
+                              OVER (ORDER BY ai.ts_interval_start) AS grp_t0,
+                          SUM(CASE WHEN t1.is_real_interval THEN 1 ELSE 0 END)
+                              OVER (ORDER BY ai.ts_interval_start) AS grp_t1
+                      FROM all_intervals ai
+                      LEFT JOIN t0_ohlc t0 ON ai.ts_interval_start = t0.ts_interval_start
+                      LEFT JOIN t1_ohlc t1 ON ai.ts_interval_start = t1.ts_interval_start
+                  ) t ON i.ts_interval_start = t.ts_interval_start
+                  LEFT JOIN t0_ohlc t0 ON i.ts_interval_start = t0.ts_interval_start AND t0.is_real_interval
+                  LEFT JOIN t1_ohlc t1 ON i.ts_interval_start = t1.ts_interval_start AND t1.is_real_interval
+                  WHERE i.ts_interval_start >= (SELECT first_complete_ts FROM first_complete_interval)
+              ),
+              real_intervals AS (
+                  SELECT
+                      i.ts_interval_start,
+                      CASE
+                          WHEN t0.is_real_interval AND t1.is_real_interval
+                               THEN t1.open_price / NULLIF(t0.open_price, 0)
+                          WHEN t0.is_real_interval
+                               THEN lap.last_t1_price / NULLIF(t0.open_price, 0)
+                          WHEN t1.is_real_interval
+                               THEN t1.open_price / NULLIF(lap.last_t0_price, 0)
+                      END AS real_open,
+                      CASE
+                          WHEN t0.is_real_interval AND t1.is_real_interval
+                               THEN t1.high_price / NULLIF(t0.low_price, 0)
+                          WHEN t0.is_real_interval
+                               THEN lap.last_t1_price / NULLIF(t0.low_price, 0)
+                          WHEN t1.is_real_interval
+                               THEN t1.high_price / NULLIF(lap.last_t0_price, 0)
+                      END AS real_high,
+                      CASE
+                          WHEN t0.is_real_interval AND t1.is_real_interval
+                               THEN t1.low_price / NULLIF(t0.high_price, 0)
+                          WHEN t0.is_real_interval
+                               THEN lap.last_t1_price / NULLIF(t0.high_price, 0)
+                          WHEN t1.is_real_interval
+                               THEN t1.low_price / NULLIF(lap.last_t0_price, 0)
+                      END AS real_low,
+                      CASE
+                          WHEN t0.is_real_interval AND t1.is_real_interval
+                               THEN t1.close_price / NULLIF(t0.close_price, 0)
+                          WHEN t0.is_real_interval
+                               THEN lap.last_t1_price / NULLIF(t0.close_price, 0)
+                          WHEN t1.is_real_interval
+                               THEN t1.close_price / NULLIF(lap.last_t0_price, 0)
+                      END AS real_close,
+                      CASE
+                          WHEN t0.is_real_interval OR t1.is_real_interval THEN true
+                          ELSE false
+                      END AS is_real
+                  FROM all_intervals i
+                  LEFT JOIN t0_ohlc t0
+                         ON i.ts_interval_start = t0.ts_interval_start
+                  LEFT JOIN t1_ohlc t1
+                         ON i.ts_interval_start = t1.ts_interval_start
+                  LEFT JOIN last_available_prices lap
+                         ON i.ts_interval_start = lap.ts_interval_start
+                  WHERE t0.is_real_interval OR t1.is_real_interval
+              ),
+              last_real_prices AS (
+                  SELECT
+                      i.ts_interval_start,
+                      (
+                          SELECT real_close
+                          FROM real_intervals ri
+                          WHERE ri.ts_interval_start = (
+                              SELECT MAX(ts_interval_start)
+                              FROM real_intervals ri2
+                              WHERE ri2.ts_interval_start <= i.ts_interval_start
+                          )
+                      ) AS last_real_price,
+                      EXISTS (
+                          SELECT 1
+                          FROM real_intervals ri
+                          WHERE ri.ts_interval_start = i.ts_interval_start
+                      ) AS is_real_interval
+                  FROM all_intervals i
+                  WHERE i.ts_interval_start >= (SELECT first_complete_ts FROM first_complete_interval)
+              )
+              SELECT
+                  lrp.ts_interval_start AS interval_start,
+                  p_target_token0       AS out_token0,
+                  p_target_token1       AS out_token1,
+                  COALESCE(ri.real_open,  lrp.last_real_price) AS open_price,
+                  COALESCE(ri.real_high,  lrp.last_real_price) AS high_price,
+                  COALESCE(ri.real_low,   lrp.last_real_price) AS low_price,
+                  COALESCE(ri.real_close, lrp.last_real_price) AS close_price,
+                  CASE
+                      WHEN ri.is_real
+                           THEN GREATEST(
+                               CASE WHEN t0.is_real_interval THEN t0.data_points ELSE 0 END,
+                               CASE WHEN t1.is_real_interval THEN t1.data_points ELSE 0 END
+                           )
+                      ELSE 0
+                  END AS data_points,
+                  lrp.is_real_interval,
+                  'indirect'::TEXT AS price_source
+              FROM last_real_prices lrp
+              LEFT JOIN real_intervals ri
+                     ON lrp.ts_interval_start = ri.ts_interval_start
+              LEFT JOIN t0_ohlc t0
+                     ON lrp.ts_interval_start = t0.ts_interval_start
+              LEFT JOIN t1_ohlc t1
+                     ON lrp.ts_interval_start = t1.ts_interval_start
+              ORDER BY lrp.ts_interval_start;
+  
+          ELSE
+              -- Direct pair logic
+              RETURN QUERY
+              WITH check_snapshots AS (
+                  SELECT EXISTS (
+                      SELECT 1
+                      FROM temp_filtered_snapshots os
+                      WHERE snapshot_block_timestamp BETWEEN v_start_time AND end_time
+                        AND (
+                            (v_invert_price AND os.token1 = p_target_token0 AND os.token0 = p_target_token1)
+                            OR (NOT v_invert_price AND os.token0 = p_target_token0 AND os.token1 = p_target_token1)
+                        )
+                        AND snapshot_tick_cumulative IS NOT NULL
+                      LIMIT 1
+                  ) AS has_data
+              ),
+              first_real_interval AS (
+                  SELECT
+                      MIN(vs_interval_start)        AS first_interval_start,
+                      MIN(snapshot_block_timestamp) AS first_timestamp
+                  FROM (
+                      SELECT
+                          snapshot_block_timestamp,
+                          (snapshot_block_timestamp / interval_seconds) * interval_seconds AS vs_interval_start
+                      FROM temp_filtered_snapshots os
+                      WHERE snapshot_block_timestamp BETWEEN v_start_time AND end_time
+                        AND (
+                            (v_invert_price AND os.token1 = p_target_token0 AND os.token0 = p_target_token1)
+                            OR (NOT v_invert_price AND os.token0 = p_target_token0 AND os.token1 = p_target_token1)
+                        )
+                        AND snapshot_tick_cumulative IS NOT NULL
+                      GROUP BY snapshot_block_timestamp, vs_interval_start
+                      HAVING COUNT(*) > 0
+                  ) first_data
+              ),
+              valid_snapshots AS (
+                  SELECT
+                      snapshot_block_timestamp,
+                      CASE WHEN v_invert_price
+                           THEN -snapshot_tick_cumulative
+                           ELSE snapshot_tick_cumulative
+                      END AS snapshot_tick_cumulative,
+                      (snapshot_block_timestamp / interval_seconds) * interval_seconds AS vs_interval_start
+                  FROM temp_filtered_snapshots os
+                  WHERE snapshot_block_timestamp >= (SELECT first_timestamp FROM first_real_interval)
+                    AND (
+                        (v_invert_price AND os.token1 = p_target_token0 AND os.token0 = p_target_token1)
+                        OR (NOT v_invert_price AND os.token0 = p_target_token0 AND os.token1 = p_target_token1)
+                    )
+                    AND snapshot_tick_cumulative IS NOT NULL
+                  ORDER BY snapshot_block_timestamp
+              ),
+              tick_rates AS (
+                  SELECT
+                      snapshot_block_timestamp,
+                      vs_interval_start,
+                      snapshot_tick_cumulative,
+                      (snapshot_tick_cumulative
+                           - LAG(snapshot_tick_cumulative) OVER (ORDER BY snapshot_block_timestamp))
+                      /
+                      NULLIF(
+                          (snapshot_block_timestamp
+                               - LAG(snapshot_block_timestamp) OVER (ORDER BY snapshot_block_timestamp)),
+                          0
+                      ) AS tick_rate
+                  FROM valid_snapshots
+              ),
+              interval_metrics AS (
+                  SELECT
+                      vs_interval_start         AS im_interval_start,
+                      COUNT(*)                  AS data_points,
+                      CASE
+                          WHEN COUNT(*) = 1 THEN MAX(tick_rate)
+                          ELSE MIN(tick_rate)
+                      END AS low_tick,
+                      CASE
+                          WHEN COUNT(*) = 1 THEN MAX(tick_rate)
+                          ELSE MAX(tick_rate)
+                      END AS high_tick,
+                      MIN(CASE WHEN rn = 1 THEN tick_rate END)     AS first_tick,
+                      MAX(CASE WHEN rn = max_rn THEN tick_rate END) AS last_tick
+                  FROM (
+                      SELECT
+                          tr.*,
+                          ROW_NUMBER() OVER (
+                              PARTITION BY tr.vs_interval_start
+                              ORDER BY tr.snapshot_block_timestamp
+                          ) AS rn,
+                          COUNT(*) OVER (PARTITION BY tr.vs_interval_start) AS max_rn
+                      FROM tick_rates tr
+                      WHERE tick_rate IS NOT NULL
+                  ) ranked_ticks
+                  GROUP BY vs_interval_start
+                  HAVING COUNT(*) > 0
+              ),
+              all_intervals AS (
+                  SELECT
+                      i.interval_start,
+                      i.interval_start + interval_seconds AS interval_end,
+                      LAG(i.interval_start) OVER (ORDER BY i.interval_start) AS prev_interval_start
+                  FROM (
+                      SELECT generate_series(
+                          (SELECT first_interval_start FROM first_real_interval),
+                          end_time,
+                          interval_seconds
+                      ) AS interval_start
+                  ) i
+              ),
+              interval_boundaries AS (
+                  SELECT
+                      ai.interval_start,
+                      ai.interval_end,
+                      vs_before.snapshot_block_timestamp AS before_start_timestamp,
+                      vs_before.snapshot_tick_cumulative AS before_start_cumulative,
+                      vs_after.snapshot_block_timestamp  AS after_end_timestamp,
+                      vs_after.snapshot_tick_cumulative  AS after_end_cumulative
+                  FROM all_intervals ai
+                  CROSS JOIN LATERAL (
+                      SELECT snapshot_block_timestamp, snapshot_tick_cumulative
+                      FROM valid_snapshots
+                      WHERE snapshot_block_timestamp <= ai.interval_start
+                      ORDER BY snapshot_block_timestamp DESC
+                      LIMIT 1
+                  ) vs_before
+                  CROSS JOIN LATERAL (
+                      SELECT snapshot_block_timestamp, snapshot_tick_cumulative
+                      FROM valid_snapshots
+                      WHERE snapshot_block_timestamp > ai.interval_end
+                      ORDER BY snapshot_block_timestamp ASC
+                      LIMIT 1
+                  ) vs_after
+              ),
+              prev_interval_data AS (
+                  SELECT
+                      ai.interval_start,
+                      (
+                          SELECT last_tick
+                          FROM interval_metrics im2
+                          WHERE im2.im_interval_start = (
+                              SELECT MAX(im3.im_interval_start)
+                              FROM interval_metrics im3
+                              WHERE im3.im_interval_start < ai.interval_start
+                                AND im3.im_interval_start >= (SELECT first_interval_start FROM first_real_interval)
+                          )
+                      ) AS prev_close_tick
+                  FROM all_intervals ai
+              ),
+              interval_combined AS (
+                  SELECT
+                      ai.interval_start,
+                      COALESCE(im.data_points, 0) AS data_points,
+                      COALESCE(im.data_points > 0, false) AS is_real_interval,
+                      CASE
+                          WHEN im.data_points > 0
+                               THEN im.first_tick
+                          WHEN ai.interval_start >= (SELECT first_interval_start FROM first_real_interval)
+                               THEN pid.prev_close_tick
+                      END AS open_tick,
+                      CASE
+                          WHEN im.data_points = 1
+                               THEN im.first_tick
+                          WHEN im.data_points > 1
+                               THEN im.high_tick
+                          WHEN ai.interval_start >= (SELECT first_interval_start FROM first_real_interval)
+                               THEN pid.prev_close_tick
+                      END AS high_tick,
+                      CASE
+                          WHEN im.data_points = 1
+                               THEN im.first_tick
+                          WHEN im.data_points > 1
+                               THEN im.low_tick
+                          WHEN ai.interval_start >= (SELECT first_interval_start FROM first_real_interval)
+                               THEN pid.prev_close_tick
+                      END AS low_tick,
+                      CASE
+                          WHEN im.data_points > 0 THEN
+                              -- Use linear interpolation for close price
+                              CASE
+                                  WHEN ib.before_start_timestamp IS NOT NULL
+                                       AND ib.after_end_timestamp IS NOT NULL
+                                  THEN (
+                                      (ib.after_end_cumulative::numeric - ib.before_start_cumulative::numeric)
+                                      /
+                                      NULLIF(
+                                          (ib.after_end_timestamp::numeric - ib.before_start_timestamp::numeric),
+                                          0
+                                      )
+                                  )
+                                  ELSE im.last_tick
+                              END
+                          WHEN ai.interval_start >= (SELECT first_interval_start FROM first_real_interval)
+                               THEN pid.prev_close_tick
+                      END AS twap_tick
+                  FROM all_intervals ai
+                  LEFT JOIN interval_metrics im
+                         ON ai.interval_start = im.im_interval_start
+                  LEFT JOIN interval_boundaries ib
+                         ON ai.interval_start = ib.interval_start
+                  LEFT JOIN prev_interval_data pid
+                         ON ai.interval_start = pid.interval_start
+              )
+              SELECT
+                  CASE
+                      WHEN NOT (SELECT has_data FROM check_snapshots)
+                           THEN end_time::BIGINT
+                      ELSE ic.interval_start
+                  END AS interval_start,
+                  p_target_token0 AS out_token0,
+                  p_target_token1 AS out_token1,
+                  CASE
+                      WHEN NOT (SELECT has_data FROM check_snapshots)
+                           THEN 1.0::NUMERIC
+                      WHEN ic.open_tick IS NOT NULL
+                           THEN power(1.000001, ic.open_tick)
+                  END AS open_price,
+                  CASE
+                      WHEN NOT (SELECT has_data FROM check_snapshots)
+                           THEN 1.0::NUMERIC
+                      WHEN ic.high_tick IS NOT NULL
+                           THEN power(1.000001, ic.high_tick)
+                  END AS high_price,
+                  CASE
+                      WHEN NOT (SELECT has_data FROM check_snapshots)
+                           THEN 1.0::NUMERIC
+                      WHEN ic.low_tick IS NOT NULL
+                           THEN power(1.000001, ic.low_tick)
+                  END AS low_price,
+                  CASE
+                      WHEN NOT (SELECT has_data FROM check_snapshots)
+                           THEN 1.0::NUMERIC
+                      WHEN ic.twap_tick IS NOT NULL
+                           THEN power(1.000001, ic.twap_tick)
+                  END AS close_price,
+                  ic.data_points,
+                  ic.is_real_interval,
+                  CASE
+                      WHEN NOT (SELECT has_data FROM check_snapshots)
+                           THEN 'initialization'::TEXT
+                      ELSE 'direct'::TEXT
+                  END AS price_source
+              FROM interval_combined ic
+              WHERE (SELECT has_data FROM check_snapshots) = FALSE
+                 OR (
+                     ic.interval_start >= (SELECT first_interval_start FROM first_real_interval)
+                     AND ic.open_tick IS NOT NULL
+                     AND ic.high_tick IS NOT NULL
+                     AND ic.low_tick IS NOT NULL
+                     AND ic.twap_tick IS NOT NULL
+                 )
+              ORDER BY interval_start;
+          END IF;
+      END;
+      $$;
     `);
-  }
+  }  
 }
