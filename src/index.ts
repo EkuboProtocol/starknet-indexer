@@ -250,6 +250,7 @@ const refreshAnalyticalTables = throttle(
 })()
   .then(() => {
     logger.info("Stream closed gracefully");
+    process.exit(0);
   })
   .catch((error) => {
     logger.error(error);
