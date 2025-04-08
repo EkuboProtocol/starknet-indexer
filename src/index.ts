@@ -15,6 +15,26 @@ const pool = new Pool({
 
 const streamClient = createClient(StarknetStream, process.env.APIBARA_URL);
 
+// Timer for exiting if no blocks are received within the configured time
+const NO_BLOCKS_TIMEOUT_MS = parseInt(process.env.NO_BLOCKS_TIMEOUT_MS || "0");
+let noBlocksTimer: NodeJS.Timeout | null = null;
+
+// Function to set or reset the no-blocks timer
+function resetNoBlocksTimer() {
+  // Clear existing timer if it exists
+  if (noBlocksTimer) {
+    clearTimeout(noBlocksTimer);
+  }
+
+  // Only set a new timer if the timeout is greater than 0
+  if (NO_BLOCKS_TIMEOUT_MS > 0) {
+    noBlocksTimer = setTimeout(() => {
+      logger.error(`No blocks received in the last ${msToHumanShort(NO_BLOCKS_TIMEOUT_MS)}. Exiting process.`);
+      process.exit(1);
+    }, NO_BLOCKS_TIMEOUT_MS);
+  }
+}
+
 function msToHumanShort(ms: number): string {
   const units = [
     { label: "d", ms: 86400000 },
@@ -89,6 +109,9 @@ const refreshAnalyticalTables = throttle(
 
   refreshAnalyticalTables(new Date(0));
 
+  // Start the no-blocks timer when application starts
+  resetNoBlocksTimer();
+
   let lastIsHead: boolean = false;
 
   for await (const message of streamClient.streamData({
@@ -110,6 +133,8 @@ const refreshAnalyticalTables = throttle(
     switch (message._tag) {
       case "heartbeat": {
         logger.info(`Heartbeat`);
+
+        // Note: We don't reset the no-blocks timer on heartbeats, only when actual blocks are received
         break;
       }
 
@@ -150,6 +175,9 @@ const refreshAnalyticalTables = throttle(
       }
 
       case "data": {
+        // Reset the no-blocks timer since we received block data
+        resetNoBlocksTimer();
+
         const blockProcessingTimer = logger.startTimer();
 
         const client = await pool.connect();
