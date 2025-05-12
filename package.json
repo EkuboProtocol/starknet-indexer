@@ -21,8 +21,8 @@
     "vitest": "^3.0.2"
   },
   "dependencies": {
-    "@apibara/protocol": "^2.0.0-beta.37",
-    "@apibara/starknet": "^2.0.0-beta.37",
+    "@apibara/protocol": "^2.1.0-beta.34",
+    "@apibara/starknet": "^2.1.0-beta.34",
     "dotenv": "^16.4.7",
     "jiti": "^2.4.2",
     "pg": "^8.13.1",

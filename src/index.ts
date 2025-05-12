@@ -1,6 +1,6 @@
 import "./config";
-import { Filter, StarknetStream } from "@apibara/starknet";
-import { createClient } from "@apibara/protocol";
+import { StarknetStream } from "@apibara/starknet";
+import { createClient, Metadata } from "@apibara/protocol";
 import type { EventKey } from "./processor";
 import { logger } from "./logger";
 import { DAO } from "./dao";
@@ -13,7 +13,15 @@ const pool = new Pool({
   connectionTimeoutMillis: 1000,
 });
 
-const streamClient = createClient(StarknetStream, process.env.APIBARA_URL);
+const streamClient = createClient(StarknetStream, process.env.APIBARA_URL, {
+  defaultCallOptions: {
+    "*": {
+      metadata: Metadata({
+        Authorization: `Bearer ${process.env.DNA_TOKEN}`,
+      }),
+    },
+  },
+});
 
 // Timer for exiting if no blocks are received within the configured time
 const NO_BLOCKS_TIMEOUT_MS = parseInt(process.env.NO_BLOCKS_TIMEOUT_MS || "0");
@@ -29,7 +37,9 @@ function resetNoBlocksTimer() {
   // Only set a new timer if the timeout is greater than 0
   if (NO_BLOCKS_TIMEOUT_MS > 0) {
     noBlocksTimer = setTimeout(() => {
-      logger.error(`No blocks received in the last ${msToHumanShort(NO_BLOCKS_TIMEOUT_MS)}. Exiting process.`);
+      logger.error(
+        `No blocks received in the last ${msToHumanShort(NO_BLOCKS_TIMEOUT_MS)}. Exiting process.`,
+      );
       process.exit(1);
     }, NO_BLOCKS_TIMEOUT_MS);
   }
@@ -116,14 +126,14 @@ const refreshAnalyticalTables = throttle(
 
   for await (const message of streamClient.streamData({
     filter: [
-      Filter.make({
+      {
         header: "always",
         events: EVENT_PROCESSORS.map((ep, ix) => ({
           id: ix + 1,
           address: ep.filter.fromAddress,
           keys: ep.filter.keys,
         })),
-      }),
+      },
     ],
     finality: "pending",
     startingCursor: databaseStartingCursor
