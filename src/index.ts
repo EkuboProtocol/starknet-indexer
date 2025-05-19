@@ -241,7 +241,9 @@ const refreshAnalyticalTables = throttle(
           }
 
           // endCursor is what we write so when we restart we delete any pending data
-          await dao.writeCursor(message.data.endCursor);
+          if (message.data.finality !== 'pending') {
+            await dao.writeCursor(message.data.endCursor);
+          }
 
           const refreshOperational =
             (isHead && (eventsProcessed > 0 || !lastIsHead)) ||
