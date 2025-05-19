@@ -240,8 +240,8 @@ const refreshAnalyticalTables = throttle(
             );
           }
 
-          // only write endCursor if cursor is not present
-          await dao.writeCursor(message.data.cursor ?? message.data.endCursor);
+          // endCursor is what we write so when we restart we delete any pending data
+          await dao.writeCursor(message.data.endCursor);
 
           const refreshOperational =
             (isHead && (eventsProcessed > 0 || !lastIsHead)) ||
