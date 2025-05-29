@@ -1008,7 +1008,6 @@ export class DAO {
         FROM oracle_pool_states_view);
         CREATE UNIQUE INDEX IF NOT EXISTS idx_oracle_pool_states_materialized_pool_key_hash ON oracle_pool_states_materialized USING btree (pool_key_hash);
 
-        DROP MATERIALIZED VIEW IF EXISTS token_pair_realized_volatility;
         CREATE MATERIALIZED VIEW IF NOT EXISTS token_pair_realized_volatility AS
         (
         WITH times AS (SELECT blocks.time - INTERVAL '3 days' AS start_time,
@@ -1052,6 +1051,77 @@ export class DAO {
                int4(FLOOR(LOG(EXP(realized_volatility)) / LOG(1.000001::NUMERIC))) AS volatility_in_ticks
         FROM realized_volatility_by_pair
         WHERE realized_volatility IS NOT NULL);
+
+        CREATE MATERIALIZED VIEW IF NOT EXISTS pool_market_depth AS
+        (
+        WITH pool_states AS (SELECT pk.key_hash,
+                                    pk.token0,
+                                    pk.token1,
+                                    tprv.realized_volatility,
+                                    tprv.volatility_in_ticks::int4,
+                                    CEIL(LOG(1::NUMERIC + (pk.fee / 0x10000000000000000::NUMERIC)) /
+                                         LOG(1.000001))::int4                  AS fee_in_ticks,
+                                    ROUND(LOG(lp.price) / LOG(1.000001))::int4 AS last_tick
+                             FROM pool_keys pk
+                                      JOIN token_pair_realized_volatility tprv
+                                           ON pk.token0 = tprv.token0 AND pk.token1 = tprv.token1
+                                      LEFT JOIN LATERAL (
+                                 SELECT total / k_volume AS price
+                                 FROM hourly_price_data hpd
+                                 WHERE hpd.token0 = pk.token0
+                                   AND hpd.token1 = pk.token1
+                                 ORDER BY hour DESC
+                                 LIMIT 1
+                                 ) AS lp ON TRUE),
+             pool_ticks AS (SELECT pool_key_hash,
+                                   SUM(net_liquidity_delta_diff)
+                                   OVER (PARTITION BY ppptliv.pool_key_hash ORDER BY ppptliv.tick ROWS UNBOUNDED PRECEDING) AS liquidity,
+                                   tick                                                                                     AS tick_start,
+                                   LEAD(tick)
+                                   OVER (PARTITION BY ppptliv.pool_key_hash ORDER BY ppptliv.tick)                          AS tick_end
+                            FROM per_pool_per_tick_liquidity_incremental_view ppptliv
+                                     JOIN pool_states ps ON ppptliv.pool_key_hash = ps.key_hash),
+             depth_liquidity_ranges AS (SELECT pt.pool_key_hash,
+                                               pt.liquidity,
+                                               INT4RANGE(ps.last_tick - ps.volatility_in_ticks,
+                                                         ps.last_tick - ps.fee_in_ticks) *
+                                               INT4RANGE(pt.tick_start, pt.tick_end) AS overlap_range_below,
+                                               INT4RANGE(ps.last_tick + ps.fee_in_ticks,
+                                                         ps.last_tick + ps.volatility_in_ticks) *
+                                               INT4RANGE(pt.tick_start, pt.tick_end) AS overlap_range_above
+                                        FROM pool_ticks pt
+                                                 JOIN pool_states ps ON pt.pool_key_hash = ps.key_hash
+                                        WHERE liquidity != 0
+                                          AND ps.fee_in_ticks < ps.volatility_in_ticks),
+             token_amounts_by_pool AS (SELECT pool_key_hash,
+-- compute amount1 corresponding to liquidity in overlap_range_below
+                                              FLOOR(SUM(liquidity *
+                                                        (POWER(1.0000005::NUMERIC, UPPER(overlap_range_below)) -
+                                                         POWER(1.0000005::NUMERIC, LOWER(overlap_range_below))))) AS amount1,
+-- compute amount0 corresponding to liquidity in overlap_range_above
+                                              FLOOR(SUM(
+                                                      liquidity *
+                                                      ((1::NUMERIC /
+                                                        POWER(1.0000005::NUMERIC, LOWER(overlap_range_above))) -
+                                                       (1::NUMERIC /
+                                                        POWER(1.0000005::NUMERIC, UPPER(overlap_range_above)))))) AS amount0
+                                       FROM depth_liquidity_ranges
+                                       WHERE NOT ISEMPTY(overlap_range_below)
+                                          OR NOT ISEMPTY(overlap_range_above)
+                                       GROUP BY pool_key_hash),
+             total_depth AS (SELECT pool_key_hash,
+                                    COALESCE(SUM(amount0), 0) AS depth0,
+                                    COALESCE(SUM(amount1), 0) AS depth1
+                             FROM token_amounts_by_pool tabp
+                                      JOIN pool_states ps ON tabp.pool_key_hash = ps.key_hash
+                             GROUP BY pool_key_hash, ps.realized_volatility)
+        SELECT td.pool_key_hash, ps.realized_volatility::FLOAT AS depth_percent, td.depth0, td.depth1
+        FROM total_depth td
+                 JOIN pool_states ps ON ps.key_hash = td.pool_key_hash
+            );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_pool_market_depth
+            ON pool_market_depth (pool_key_hash);
 
         CREATE UNIQUE INDEX IF NOT EXISTS idx_token_pair_realized_volatility_pair
             ON token_pair_realized_volatility (token0, token1);
@@ -1506,6 +1576,7 @@ export class DAO {
       REFRESH MATERIALIZED VIEW CONCURRENTLY last_24h_pool_stats_materialized;
       REFRESH MATERIALIZED VIEW CONCURRENTLY latest_token_registrations;
       REFRESH MATERIALIZED VIEW CONCURRENTLY token_pair_realized_volatility;
+      REFRESH MATERIALIZED VIEW CONCURRENTLY pool_market_depth;
     `);
   }
 
