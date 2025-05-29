@@ -1010,7 +1010,7 @@ export class DAO {
 
         CREATE MATERIALIZED VIEW IF NOT EXISTS token_pair_realized_volatility AS
         (
-        WITH times AS (SELECT blocks.time - INTERVAL '3 days' AS start_time,
+        WITH times AS (SELECT blocks.time - INTERVAL '7 days' AS start_time,
                               blocks.time                     AS end_time
                        FROM blocks
                        ORDER BY number DESC
