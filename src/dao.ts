@@ -1053,6 +1053,9 @@ export class DAO {
         FROM realized_volatility_by_pair
         WHERE realized_volatility IS NOT NULL);
 
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_token_pair_realized_volatility_pair
+            ON token_pair_realized_volatility (token0, token1);
+
         CREATE OR REPLACE FUNCTION numeric_to_hex(num NUMERIC) RETURNS TEXT
             IMMUTABLE
             LANGUAGE plpgsql
