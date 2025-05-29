@@ -1008,6 +1008,51 @@ export class DAO {
         FROM oracle_pool_states_view);
         CREATE UNIQUE INDEX IF NOT EXISTS idx_oracle_pool_states_materialized_pool_key_hash ON oracle_pool_states_materialized USING btree (pool_key_hash);
 
+        DROP MATERIALIZED VIEW IF EXISTS token_pair_realized_volatility;
+        CREATE MATERIALIZED VIEW IF NOT EXISTS token_pair_realized_volatility AS
+        (
+        WITH times AS (SELECT blocks.time - INTERVAL '3 days' AS start_time,
+                              blocks.time                     AS end_time
+                       FROM blocks
+                       ORDER BY number DESC
+                       LIMIT 1),
+
+             prices AS (SELECT token0,
+                               token1,
+                               hour,
+
+                               total / k_volume AS price
+                        FROM hourly_price_data p,
+                             times t
+                        WHERE p.hour BETWEEN t.start_time AND t.end_time
+                        ORDER BY hour),
+
+             log_price_changes AS (SELECT token0,
+                                          token1,
+                                          LN(price) -
+                                          LN(COALESCE(
+                                                          LAG(price) OVER (PARTITION BY token0, token1 ORDER BY hour),
+                                                          price))                   AS price_change,
+                                          EXTRACT(HOURS FROM hour - COALESCE(LAG(hour)
+                                                                             OVER (PARTITION BY token0, token1 ORDER BY hour),
+                                                                             hour)) AS hours_since_last
+                                   FROM prices p,
+                                        times t
+                                   ORDER BY hour),
+
+             realized_volatility_by_pair AS (SELECT token0,
+                                                    token1,
+                                                    STDDEV(lpc.price_change) * SQRT(SUM(hours_since_last)) AS realized_volatility
+                                             FROM log_price_changes lpc
+                                             GROUP BY token0, token1)
+
+        SELECT token0,
+               token1,
+               realized_volatility,
+               int4(FLOOR(LOG(EXP(realized_volatility)) / LOG(1.000001::NUMERIC))) AS volatility_in_ticks
+        FROM realized_volatility_by_pair
+        WHERE realized_volatility IS NOT NULL);
+
         CREATE OR REPLACE FUNCTION numeric_to_hex(num NUMERIC) RETURNS TEXT
             IMMUTABLE
             LANGUAGE plpgsql
@@ -1457,6 +1502,7 @@ export class DAO {
     await this.pg.query(`
       REFRESH MATERIALIZED VIEW CONCURRENTLY last_24h_pool_stats_materialized;
       REFRESH MATERIALIZED VIEW CONCURRENTLY latest_token_registrations;
+      REFRESH MATERIALIZED VIEW CONCURRENTLY token_pair_realized_volatility;
     `);
   }
 
