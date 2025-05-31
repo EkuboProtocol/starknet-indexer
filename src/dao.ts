@@ -1019,36 +1019,34 @@ export class DAO {
              prices AS (SELECT token0,
                                token1,
                                hour,
-
-                               total / k_volume AS price
-                        FROM hourly_price_data p,
+                               LN(total / k_volume)                                          AS log_price,
+                               ROW_NUMBER() OVER (PARTITION BY token0, token1 ORDER BY hour) AS row_no
+                        FROM hourly_price_data hpd,
                              times t
-                        WHERE p.hour BETWEEN t.start_time AND t.end_time
-                        ORDER BY hour),
+                        WHERE hpd.hour BETWEEN t.start_time AND t.end_time
+                          AND hpd.k_volume <> 0),
 
              log_price_changes AS (SELECT token0,
                                           token1,
-                                          LN(price) -
-                                          LN(COALESCE(
-                                                          LAG(price) OVER (PARTITION BY token0, token1 ORDER BY hour),
-                                                          price))                   AS price_change,
-                                          EXTRACT(HOURS FROM hour - COALESCE(LAG(hour)
-                                                                             OVER (PARTITION BY token0, token1 ORDER BY hour),
-                                                                             hour)) AS hours_since_last
-                                   FROM prices p,
-                                        times t
-                                   ORDER BY hour),
+                                          log_price -
+                                          LAG(log_price) OVER (PARTITION BY token0, token1 ORDER BY row_no)             AS price_change,
+                                          EXTRACT(HOURS FROM hour - LAG(hour)
+                                                                    OVER (PARTITION BY token0, token1 ORDER BY row_no)) AS hours_since_last
+                                   FROM prices p
+                                   WHERE p.row_no != 1),
 
              realized_volatility_by_pair AS (SELECT token0,
                                                     token1,
-                                                    STDDEV(lpc.price_change) * SQRT(SUM(hours_since_last)) AS realized_volatility
+                                                    COUNT(1)                               AS observation_count,
+                                                    SQRT(SUM(price_change * price_change)) AS realized_volatility
                                              FROM log_price_changes lpc
                                              GROUP BY token0, token1)
 
         SELECT token0,
                token1,
                realized_volatility,
-               int4(FLOOR(LOG(EXP(realized_volatility)) / LOG(1.000001::NUMERIC))) AS volatility_in_ticks
+               observation_count,
+               int4(FLOOR(realized_volatility / LN(1.000001::NUMERIC))) AS volatility_in_ticks
         FROM realized_volatility_by_pair
         WHERE realized_volatility IS NOT NULL);
 
