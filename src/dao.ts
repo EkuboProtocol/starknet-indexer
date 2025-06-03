@@ -1448,27 +1448,35 @@ export class DAO {
 
     await this.pg.query({
       text: `
-                INSERT INTO hourly_price_data
-                    (SELECT pk.token0                                                    AS token0,
-                            pk.token1                                                    AS token1,
-                            date_bin(INTERVAL '1 hour', b.time,
-                                     '2000-01-01 00:00:00'::TIMESTAMP WITHOUT TIME ZONE) AS hour,
-                            SUM(ABS(delta1 * delta0))                                    AS k_volume,
-                            SUM(delta1 * delta1)                                         AS total,
-                            COUNT(1)                                                     AS swap_count
-                     FROM swaps s
-                              JOIN event_keys ek ON s.event_id = ek.id
-                              JOIN blocks b ON ek.block_number = b.number
-                              JOIN pool_keys pk ON s.pool_key_hash = pk.key_hash
-                     WHERE DATE_TRUNC('hour', b.time) >= DATE_TRUNC('hour', $1::timestamptz)
-                       AND delta0 != 0
-                       AND delta1 != 0
-                     GROUP BY pk.token0, pk.token1, hour)
-                ON CONFLICT (token0, token1, hour)
-                    DO UPDATE SET k_volume   = excluded.k_volume,
-                                  total      = excluded.total,
-                                  swap_count = excluded.swap_count;
-            `,
+          WITH total_swaps_per_block_pair AS (SELECT ek.block_number,
+                                                     pk.token0   AS token0,
+                                                     pk.token1   AS token1,
+                                                     SUM(delta0) AS total_delta0,
+                                                     SUM(delta1) AS total_delta1,
+                                                     COUNT(1)    AS swap_count
+                                              FROM swaps s
+                                                       JOIN event_keys ek ON s.event_id = ek.id
+                                                       JOIN pool_keys pk ON s.pool_key_hash = pk.key_hash
+                                              GROUP BY block_number, pk.token0, pk.token1)
+          INSERT
+          INTO hourly_price_data
+              (SELECT token0,
+                      token1,
+                      DATE_TRUNC('hour', b.time)            AS hour,
+                      SUM(ABS(total_delta0 * total_delta1)) AS k_volume,
+                      SUM(total_delta1 * total_delta1)      AS total,
+                      SUM(swap_count)                       AS swap_count
+               FROM total_swaps_per_block_pair tspt
+                        JOIN blocks b ON tspt.block_number = b.number
+               WHERE total_delta0 != 0
+                 AND total_delta1 != 0
+                 AND DATE_TRUNC('hour', b.time) >= DATE_TRUNC('hour', $1::timestamptz)
+               GROUP BY token0, token1, hour)
+          ON CONFLICT (token0, token1, hour)
+              DO UPDATE SET k_volume   = excluded.k_volume,
+                            total      = excluded.total,
+                            swap_count = excluded.swap_count;
+      `,
       values: [since],
     });
 
