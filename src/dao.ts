@@ -1146,6 +1146,120 @@ export class DAO {
         END;
         $$;
 
+        CREATE OR REPLACE FUNCTION calculate_voting_weight_at_time(
+            p_delegate NUMERIC,
+            p_target_time TIMESTAMPTZ,
+            p_smoothing_duration BIGINT
+        ) RETURNS NUMERIC AS $$
+        DECLARE
+            current_weight NUMERIC := 0;
+            current_target NUMERIC := 0;
+            event_record RECORD;
+        BEGIN
+            -- If no smoothing, return final delegated amount
+            IF p_smoothing_duration = 0 THEN
+                SELECT COALESCE(SUM(
+                    CASE 
+                        WHEN stake_events.event_type = 'stake' THEN stake_events.amount
+                        ELSE -stake_events.amount
+                    END
+                ), 0) INTO current_target
+                FROM (
+                    SELECT b.time AS event_time, ss.amount, 'stake' AS event_type
+                    FROM staker_staked ss
+                    JOIN event_keys ek ON ss.event_id = ek.id
+                    JOIN blocks b ON ek.block_number = b.number
+                    WHERE ss.delegate = p_delegate AND b.time < p_target_time
+                    
+                    UNION ALL
+                    
+                    SELECT b.time AS event_time, sw.amount, 'withdraw' AS event_type
+                    FROM staker_withdrawn sw
+                    JOIN event_keys ek ON sw.event_id = ek.id
+                    JOIN blocks b ON ek.block_number = b.number
+                    WHERE sw.delegate = p_delegate AND b.time < p_target_time
+                ) stake_events;
+                
+                RETURN GREATEST(current_target, 0);
+            END IF;
+            
+            -- Process events chronologically to simulate voting weight progression
+            FOR event_record IN (
+                SELECT 
+                    event_time,
+                    cumulative_amount,
+                    LAG(event_time) OVER (ORDER BY event_time, event_order) AS prev_event_time,
+                    LAG(cumulative_amount) OVER (ORDER BY event_time, event_order) AS prev_cumulative_amount
+                FROM (
+                    SELECT 
+                        b.time AS event_time,
+                        SUM(
+                            CASE 
+                                WHEN stake_events.event_type = 'stake' THEN stake_events.amount
+                                ELSE -stake_events.amount
+                            END
+                        ) OVER (ORDER BY b.time, stake_events.event_order ROWS UNBOUNDED PRECEDING) AS cumulative_amount,
+                        stake_events.event_order
+                    FROM (
+                        SELECT ss.event_id, ss.delegate, ss.amount, 'stake' AS event_type, 1 AS event_order
+                        FROM staker_staked ss
+                        WHERE ss.delegate = p_delegate
+                        
+                        UNION ALL
+                        
+                        SELECT sw.event_id, sw.delegate, sw.amount, 'withdraw' AS event_type, 2 AS event_order
+                        FROM staker_withdrawn sw
+                        WHERE sw.delegate = p_delegate
+                    ) stake_events
+                    JOIN event_keys ek ON stake_events.event_id = ek.id
+                    JOIN blocks b ON ek.block_number = b.number
+                    WHERE b.time < p_target_time
+                    ORDER BY b.time, stake_events.event_order
+                ) ordered_events
+            ) LOOP
+                -- If this is the first event
+                IF event_record.prev_event_time IS NULL THEN
+                    current_weight := 0;
+                    current_target := event_record.cumulative_amount;
+                ELSE
+                    -- Calculate how much time has passed since the previous event
+                    DECLARE
+                        time_elapsed NUMERIC := EXTRACT(EPOCH FROM (event_record.event_time - event_record.prev_event_time));
+                    BEGIN
+                        -- Update current weight based on progression toward previous target
+                        IF time_elapsed >= p_smoothing_duration THEN
+                            current_weight := event_record.prev_cumulative_amount;
+                        ELSE
+                            current_weight := current_weight + 
+                                (event_record.prev_cumulative_amount - current_weight) * 
+                                (time_elapsed / p_smoothing_duration);
+                        END IF;
+                        
+                        -- Set new target
+                        current_target := event_record.cumulative_amount;
+                    END;
+                END IF;
+            END LOOP;
+            
+            -- Calculate final weight at target time
+            IF current_target > 0 AND event_record.event_time IS NOT NULL THEN
+                DECLARE
+                    final_time_elapsed NUMERIC := EXTRACT(EPOCH FROM (p_target_time - event_record.event_time));
+                BEGIN
+                    IF final_time_elapsed >= p_smoothing_duration THEN
+                        current_weight := current_target;
+                    ELSE
+                        current_weight := current_weight + 
+                            (current_target - current_weight) * 
+                            (final_time_elapsed / p_smoothing_duration);
+                    END IF;
+                END;
+            END IF;
+            
+            RETURN GREATEST(current_weight, 0);
+        END;
+        $$ LANGUAGE plpgsql;
+
         CREATE OR REPLACE VIEW proposal_delegate_voting_weights_view AS
         (
         WITH proposal_voting_start_times AS (
@@ -1162,115 +1276,54 @@ export class DAO {
             JOIN governor_reconfigured gr ON gp.config_version = gr.version
         ),
         
-        -- Get all delegates who had any staking activity before each proposal's voting start time
-        delegates_per_proposal AS (
-            SELECT DISTINCT 
+        -- Get all delegates who have staking activity
+        active_delegates AS (
+            SELECT DISTINCT delegate
+            FROM (
+                SELECT delegate FROM staker_staked
+                UNION
+                SELECT delegate FROM staker_withdrawn
+            ) all_delegates
+        ),
+        
+        -- Calculate voting weights for each proposal-delegate combination
+        voting_weight_calculation AS (
+            SELECT 
                 pvst.proposal_id,
+                ad.delegate,
                 pvst.voting_start_time,
                 pvst.voting_weight_smoothing_duration,
-                ss.delegate
+                calculate_voting_weight_at_time(
+                    ad.delegate, 
+                    pvst.voting_start_time, 
+                    pvst.voting_weight_smoothing_duration
+                ) AS voting_weight,
+                -- Also calculate net delegated amount for reference
+                COALESCE((
+                    SELECT SUM(
+                        CASE 
+                            WHEN stake_events.event_type = 'stake' THEN stake_events.amount
+                            ELSE -stake_events.amount
+                        END
+                    )
+                    FROM (
+                        SELECT ss.amount, 'stake' AS event_type
+                        FROM staker_staked ss
+                        JOIN event_keys ek ON ss.event_id = ek.id
+                        JOIN blocks b ON ek.block_number = b.number
+                        WHERE ss.delegate = ad.delegate AND b.time < pvst.voting_start_time
+                        
+                        UNION ALL
+                        
+                        SELECT sw.amount, 'withdraw' AS event_type
+                        FROM staker_withdrawn sw
+                        JOIN event_keys ek ON sw.event_id = ek.id
+                        JOIN blocks b ON ek.block_number = b.number
+                        WHERE sw.delegate = ad.delegate AND b.time < pvst.voting_start_time
+                    ) stake_events
+                ), 0) AS net_delegated_amount
             FROM proposal_voting_start_times pvst
-            CROSS JOIN (
-                SELECT DISTINCT delegate FROM staker_staked
-                UNION 
-                SELECT DISTINCT delegate FROM staker_withdrawn
-            ) ss
-        ),
-        
-        -- Calculate net staked amount for each delegate at each proposal's voting start time
-        delegate_stakes_at_voting_start AS (
-            SELECT 
-                dpp.proposal_id,
-                dpp.delegate,
-                dpp.voting_start_time,
-                dpp.voting_weight_smoothing_duration,
-                COALESCE(staked_amounts.total_staked, 0) - COALESCE(withdrawn_amounts.total_withdrawn, 0) AS net_delegated_amount
-            FROM delegates_per_proposal dpp
-            LEFT JOIN (
-                SELECT 
-                    dpp_inner.proposal_id,
-                    dpp_inner.delegate,
-                    SUM(ss.amount) AS total_staked
-                FROM delegates_per_proposal dpp_inner
-                JOIN staker_staked ss ON dpp_inner.delegate = ss.delegate
-                JOIN event_keys ek ON ss.event_id = ek.id
-                JOIN blocks b ON ek.block_number = b.number
-                WHERE b.time < dpp_inner.voting_start_time
-                GROUP BY dpp_inner.proposal_id, dpp_inner.delegate
-            ) staked_amounts ON dpp.proposal_id = staked_amounts.proposal_id AND dpp.delegate = staked_amounts.delegate
-            LEFT JOIN (
-                SELECT 
-                    dpp_inner.proposal_id,
-                    dpp_inner.delegate,
-                    SUM(sw.amount) AS total_withdrawn
-                FROM delegates_per_proposal dpp_inner
-                JOIN staker_withdrawn sw ON dpp_inner.delegate = sw.delegate
-                JOIN event_keys ek ON sw.event_id = ek.id
-                JOIN blocks b ON ek.block_number = b.number
-                WHERE b.time < dpp_inner.voting_start_time
-                GROUP BY dpp_inner.proposal_id, dpp_inner.delegate
-            ) withdrawn_amounts ON dpp.proposal_id = withdrawn_amounts.proposal_id AND dpp.delegate = withdrawn_amounts.delegate
-        ),
-        
-        -- Find the most recent staking event for each delegate before voting start time
-        latest_stake_times AS (
-            SELECT 
-                dsavs.proposal_id,
-                dsavs.delegate,
-                dsavs.voting_start_time,
-                dsavs.voting_weight_smoothing_duration,
-                dsavs.net_delegated_amount,
-                GREATEST(
-                    COALESCE(latest_staked.latest_stake_time, '1970-01-01'::timestamptz),
-                    COALESCE(latest_withdrawn.latest_withdraw_time, '1970-01-01'::timestamptz)
-                ) AS latest_stake_time
-            FROM delegate_stakes_at_voting_start dsavs
-            LEFT JOIN (
-                SELECT 
-                    dsavs_inner.proposal_id,
-                    dsavs_inner.delegate,
-                    MAX(b.time) AS latest_stake_time
-                FROM delegate_stakes_at_voting_start dsavs_inner
-                JOIN staker_staked ss ON dsavs_inner.delegate = ss.delegate
-                JOIN event_keys ek ON ss.event_id = ek.id
-                JOIN blocks b ON ek.block_number = b.number
-                WHERE b.time < dsavs_inner.voting_start_time
-                GROUP BY dsavs_inner.proposal_id, dsavs_inner.delegate
-            ) latest_staked ON dsavs.proposal_id = latest_staked.proposal_id AND dsavs.delegate = latest_staked.delegate
-            LEFT JOIN (
-                SELECT 
-                    dsavs_inner.proposal_id,
-                    dsavs_inner.delegate,
-                    MAX(b.time) AS latest_withdraw_time
-                FROM delegate_stakes_at_voting_start dsavs_inner
-                JOIN staker_withdrawn sw ON dsavs_inner.delegate = sw.delegate
-                JOIN event_keys ek ON sw.event_id = ek.id
-                JOIN blocks b ON ek.block_number = b.number
-                WHERE b.time < dsavs_inner.voting_start_time
-                GROUP BY dsavs_inner.proposal_id, dsavs_inner.delegate
-            ) latest_withdrawn ON dsavs.proposal_id = latest_withdrawn.proposal_id AND dsavs.delegate = latest_withdrawn.delegate
-        ),
-        
-        -- Calculate voting weight based on smoothing duration
-        voting_weights AS (
-            SELECT 
-                lst.proposal_id,
-                lst.delegate,
-                lst.net_delegated_amount,
-                lst.voting_start_time,
-                lst.voting_weight_smoothing_duration,
-                lst.latest_stake_time,
-                CASE 
-                    WHEN lst.net_delegated_amount <= 0 THEN 0
-                    WHEN lst.latest_stake_time = '1970-01-01'::timestamptz THEN 0
-                    WHEN lst.voting_weight_smoothing_duration = 0 THEN lst.net_delegated_amount
-                    WHEN EXTRACT(EPOCH FROM (lst.voting_start_time - lst.latest_stake_time)) >= lst.voting_weight_smoothing_duration THEN lst.net_delegated_amount
-                    WHEN EXTRACT(EPOCH FROM (lst.voting_start_time - lst.latest_stake_time)) <= 0 THEN 0
-                    ELSE 
-                        lst.net_delegated_amount * 
-                        (EXTRACT(EPOCH FROM (lst.voting_start_time - lst.latest_stake_time)) / lst.voting_weight_smoothing_duration)
-                END AS voting_weight
-            FROM latest_stake_times lst
+            CROSS JOIN active_delegates ad
         )
         
         SELECT 
@@ -1279,8 +1332,8 @@ export class DAO {
             net_delegated_amount,
             voting_weight,
             voting_start_time
-        FROM voting_weights
-        WHERE voting_weight > 0
+        FROM voting_weight_calculation
+        WHERE net_delegated_amount > 0 AND voting_weight > 0
         );
         
         CREATE MATERIALIZED VIEW IF NOT EXISTS proposal_delegate_voting_weights_materialized AS
