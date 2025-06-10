@@ -1146,6 +1146,157 @@ export class DAO {
         END;
         $$;
 
+        CREATE OR REPLACE VIEW proposal_delegate_voting_weights_view AS
+        (
+        WITH proposal_voting_start_times AS (
+            SELECT 
+                gp.id AS proposal_id,
+                gp.proposer,
+                gp.config_version,
+                gb.time AS proposal_time,
+                gb.time + INTERVAL '1 second' * gr.voting_start_delay AS voting_start_time,
+                gr.voting_weight_smoothing_duration
+            FROM governor_proposed gp
+            JOIN event_keys ek ON gp.event_id = ek.id
+            JOIN blocks gb ON ek.block_number = gb.number
+            JOIN governor_reconfigured gr ON gp.config_version = gr.version
+        ),
+        
+        -- Get all delegates who had any staking activity before each proposal's voting start time
+        delegates_per_proposal AS (
+            SELECT DISTINCT 
+                pvst.proposal_id,
+                pvst.voting_start_time,
+                pvst.voting_weight_smoothing_duration,
+                ss.delegate
+            FROM proposal_voting_start_times pvst
+            CROSS JOIN (
+                SELECT DISTINCT delegate FROM staker_staked
+                UNION 
+                SELECT DISTINCT delegate FROM staker_withdrawn
+            ) ss
+        ),
+        
+        -- Calculate net staked amount for each delegate at each proposal's voting start time
+        delegate_stakes_at_voting_start AS (
+            SELECT 
+                dpp.proposal_id,
+                dpp.delegate,
+                dpp.voting_start_time,
+                dpp.voting_weight_smoothing_duration,
+                COALESCE(staked_amounts.total_staked, 0) - COALESCE(withdrawn_amounts.total_withdrawn, 0) AS net_delegated_amount
+            FROM delegates_per_proposal dpp
+            LEFT JOIN (
+                SELECT 
+                    dpp_inner.proposal_id,
+                    dpp_inner.delegate,
+                    SUM(ss.amount) AS total_staked
+                FROM delegates_per_proposal dpp_inner
+                JOIN staker_staked ss ON dpp_inner.delegate = ss.delegate
+                JOIN event_keys ek ON ss.event_id = ek.id
+                JOIN blocks b ON ek.block_number = b.number
+                WHERE b.time < dpp_inner.voting_start_time
+                GROUP BY dpp_inner.proposal_id, dpp_inner.delegate
+            ) staked_amounts ON dpp.proposal_id = staked_amounts.proposal_id AND dpp.delegate = staked_amounts.delegate
+            LEFT JOIN (
+                SELECT 
+                    dpp_inner.proposal_id,
+                    dpp_inner.delegate,
+                    SUM(sw.amount) AS total_withdrawn
+                FROM delegates_per_proposal dpp_inner
+                JOIN staker_withdrawn sw ON dpp_inner.delegate = sw.delegate
+                JOIN event_keys ek ON sw.event_id = ek.id
+                JOIN blocks b ON ek.block_number = b.number
+                WHERE b.time < dpp_inner.voting_start_time
+                GROUP BY dpp_inner.proposal_id, dpp_inner.delegate
+            ) withdrawn_amounts ON dpp.proposal_id = withdrawn_amounts.proposal_id AND dpp.delegate = withdrawn_amounts.delegate
+        ),
+        
+        -- Find the most recent staking event for each delegate before voting start time
+        latest_stake_times AS (
+            SELECT 
+                dsavs.proposal_id,
+                dsavs.delegate,
+                dsavs.voting_start_time,
+                dsavs.voting_weight_smoothing_duration,
+                dsavs.net_delegated_amount,
+                GREATEST(
+                    COALESCE(latest_staked.latest_stake_time, '1970-01-01'::timestamptz),
+                    COALESCE(latest_withdrawn.latest_withdraw_time, '1970-01-01'::timestamptz)
+                ) AS latest_stake_time
+            FROM delegate_stakes_at_voting_start dsavs
+            LEFT JOIN (
+                SELECT 
+                    dsavs_inner.proposal_id,
+                    dsavs_inner.delegate,
+                    MAX(b.time) AS latest_stake_time
+                FROM delegate_stakes_at_voting_start dsavs_inner
+                JOIN staker_staked ss ON dsavs_inner.delegate = ss.delegate
+                JOIN event_keys ek ON ss.event_id = ek.id
+                JOIN blocks b ON ek.block_number = b.number
+                WHERE b.time < dsavs_inner.voting_start_time
+                GROUP BY dsavs_inner.proposal_id, dsavs_inner.delegate
+            ) latest_staked ON dsavs.proposal_id = latest_staked.proposal_id AND dsavs.delegate = latest_staked.delegate
+            LEFT JOIN (
+                SELECT 
+                    dsavs_inner.proposal_id,
+                    dsavs_inner.delegate,
+                    MAX(b.time) AS latest_withdraw_time
+                FROM delegate_stakes_at_voting_start dsavs_inner
+                JOIN staker_withdrawn sw ON dsavs_inner.delegate = sw.delegate
+                JOIN event_keys ek ON sw.event_id = ek.id
+                JOIN blocks b ON ek.block_number = b.number
+                WHERE b.time < dsavs_inner.voting_start_time
+                GROUP BY dsavs_inner.proposal_id, dsavs_inner.delegate
+            ) latest_withdrawn ON dsavs.proposal_id = latest_withdrawn.proposal_id AND dsavs.delegate = latest_withdrawn.delegate
+        ),
+        
+        -- Calculate voting weight based on smoothing duration
+        voting_weights AS (
+            SELECT 
+                lst.proposal_id,
+                lst.delegate,
+                lst.net_delegated_amount,
+                lst.voting_start_time,
+                lst.voting_weight_smoothing_duration,
+                lst.latest_stake_time,
+                CASE 
+                    WHEN lst.net_delegated_amount <= 0 THEN 0
+                    WHEN lst.latest_stake_time = '1970-01-01'::timestamptz THEN 0
+                    WHEN lst.voting_weight_smoothing_duration = 0 THEN lst.net_delegated_amount
+                    WHEN EXTRACT(EPOCH FROM (lst.voting_start_time - lst.latest_stake_time)) >= lst.voting_weight_smoothing_duration THEN lst.net_delegated_amount
+                    WHEN EXTRACT(EPOCH FROM (lst.voting_start_time - lst.latest_stake_time)) <= 0 THEN 0
+                    ELSE 
+                        lst.net_delegated_amount * 
+                        (EXTRACT(EPOCH FROM (lst.voting_start_time - lst.latest_stake_time)) / lst.voting_weight_smoothing_duration)
+                END AS voting_weight
+            FROM latest_stake_times lst
+        )
+        
+        SELECT 
+            proposal_id,
+            delegate,
+            net_delegated_amount,
+            voting_weight,
+            voting_start_time
+        FROM voting_weights
+        WHERE voting_weight > 0
+        );
+        
+        CREATE MATERIALIZED VIEW IF NOT EXISTS proposal_delegate_voting_weights_materialized AS
+        (
+        SELECT 
+            proposal_id,
+            delegate,
+            net_delegated_amount,
+            voting_weight,
+            voting_start_time
+        FROM proposal_delegate_voting_weights_view
+        );
+        CREATE INDEX IF NOT EXISTS idx_proposal_delegate_voting_weights_proposal_id ON proposal_delegate_voting_weights_materialized USING btree (proposal_id);
+        CREATE INDEX IF NOT EXISTS idx_proposal_delegate_voting_weights_delegate ON proposal_delegate_voting_weights_materialized USING btree (delegate);
+        CREATE INDEX IF NOT EXISTS idx_proposal_delegate_voting_weights_proposal_delegate ON proposal_delegate_voting_weights_materialized USING btree (proposal_id, delegate);
+
         CREATE OR REPLACE FUNCTION calculate_staker_rewards(
             start_time timestamptz,
             end_time timestamptz,
@@ -1594,6 +1745,7 @@ export class DAO {
       REFRESH MATERIALIZED VIEW CONCURRENTLY twamm_sale_rate_deltas_materialized;
       REFRESH MATERIALIZED VIEW CONCURRENTLY oracle_pool_states_materialized;
       REFRESH MATERIALIZED VIEW CONCURRENTLY limit_order_pool_states_materialized;
+      REFRESH MATERIALIZED VIEW CONCURRENTLY proposal_delegate_voting_weights_materialized;
     `);
   }
 
