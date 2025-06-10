@@ -244,6 +244,7 @@ export class DAO {
             liquidity_after  NUMERIC NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_swaps_pool_key_hash_event_id ON swaps USING btree (pool_key_hash, event_id);
+        CREATE INDEX IF NOT EXISTS idx_swaps_pool_key_hash_event_id_desc ON swaps USING btree (pool_key_hash, event_id DESC) INCLUDE (sqrt_ratio_after, tick_after, liquidity_after);
 
         CREATE TABLE IF NOT EXISTS position_minted_with_referrer
         (
@@ -1685,7 +1686,7 @@ export class DAO {
 
   public async insertPositionTransferEvent(
     transfer: TransferEvent,
-    key: EventKey,
+    key: EventKey
   ) {
     // The `*` operator is the PostgreSQL range intersection operator.
     await this.pg.query({
@@ -1717,7 +1718,7 @@ export class DAO {
 
   public async insertPositionMintedWithReferrerEvent(
     minted: PositionMintedWithReferrer,
-    key: EventKey,
+    key: EventKey
   ) {
     await this.pg.query({
       text: `
@@ -1746,7 +1747,7 @@ export class DAO {
 
   public async insertPositionUpdatedEvent(
     event: PositionUpdatedEvent,
-    key: EventKey,
+    key: EventKey
   ) {
     const pool_key_hash = await this.insertPoolKeyHash(event.pool_key);
 
@@ -1793,7 +1794,7 @@ export class DAO {
 
   public async insertPositionFeesCollectedEvent(
     event: PositionFeesCollectedEvent,
-    key: EventKey,
+    key: EventKey
   ) {
     const pool_key_hash = await this.insertPoolKeyHash(event.pool_key);
 
@@ -1838,7 +1839,7 @@ export class DAO {
 
   public async insertInitializationEvent(
     event: PoolInitializationEvent,
-    key: EventKey,
+    key: EventKey
   ) {
     const pool_key_hash = await this.insertPoolKeyHash(event.pool_key);
 
@@ -1873,7 +1874,7 @@ export class DAO {
 
   public async insertProtocolFeesWithdrawn(
     event: ProtocolFeesWithdrawnEvent,
-    key: EventKey,
+    key: EventKey
   ) {
     await this.pg.query({
       text: `
@@ -1904,7 +1905,7 @@ export class DAO {
 
   public async insertProtocolFeesPaid(
     event: ProtocolFeesPaidEvent,
-    key: EventKey,
+    key: EventKey
   ) {
     const pool_key_hash = await this.insertPoolKeyHash(event.pool_key);
 
@@ -1949,7 +1950,7 @@ export class DAO {
 
   public async insertFeesAccumulatedEvent(
     event: FeesAccumulatedEvent,
-    key: EventKey,
+    key: EventKey
   ) {
     const pool_key_hash = await this.insertPoolKeyHash(event.pool_key);
 
@@ -1984,7 +1985,7 @@ export class DAO {
 
   public async insertRegistration(
     event: TokenRegistrationEvent,
-    key: EventKey,
+    key: EventKey
   ) {
     await this.pg.query({
       text: `
@@ -2020,7 +2021,7 @@ export class DAO {
 
   public async insertRegistrationV3(
     event: TokenRegistrationEventV3,
-    key: EventKey,
+    key: EventKey
   ) {
     await this.pg.query({
       text: `
@@ -2113,12 +2114,12 @@ export class DAO {
 
   public async insertTWAMMOrderUpdatedEvent(
     order_updated: OrderUpdatedEvent,
-    key: EventKey,
+    key: EventKey
   ) {
     const { order_key } = order_updated;
 
     const key_hash = await this.insertPoolKeyHash(
-      orderKeyToPoolKey(key, order_key),
+      orderKeyToPoolKey(key, order_key)
     );
 
     const [sale_rate_delta0, sale_rate_delta1] =
@@ -2166,12 +2167,12 @@ export class DAO {
 
   public async insertTWAMMOrderProceedsWithdrawnEvent(
     order_proceeds_withdrawn: OrderProceedsWithdrawnEvent,
-    key: EventKey,
+    key: EventKey
   ) {
     const { order_key } = order_proceeds_withdrawn;
 
     const key_hash = await this.insertPoolKeyHash(
-      orderKeyToPoolKey(key, order_key),
+      orderKeyToPoolKey(key, order_key)
     );
 
     const [amount0, amount1] =
@@ -2211,7 +2212,7 @@ export class DAO {
 
   public async insertTWAMMVirtualOrdersExecutedEvent(
     virtual_orders_executed: VirtualOrdersExecutedEvent,
-    key: EventKey,
+    key: EventKey
   ) {
     let { key: state_key } = virtual_orders_executed;
 
@@ -2311,7 +2312,7 @@ export class DAO {
 
   async insertGovernorProposedEvent(
     parsed: GovernorProposedEvent,
-    key: EventKey,
+    key: EventKey
   ) {
     const query =
       parsed.calls.length > 0
@@ -2335,7 +2336,7 @@ export class DAO {
                                 call.selector
                               }, '{${call.calldata
                                 .map((c) => c.toString())
-                                .join(",")}}')`,
+                                .join(",")}}')`
                           )
                           .join(",")};
                 `
@@ -2366,7 +2367,7 @@ export class DAO {
 
   async insertGovernorExecutedEvent(
     parsed: GovernorExecutedEvent,
-    key: EventKey,
+    key: EventKey
   ) {
     const query =
       parsed.result_data.length > 0
@@ -2388,7 +2389,7 @@ export class DAO {
                             (results, ix) =>
                               `($6, ${ix}, '{${results
                                 .map((c) => c.toString())
-                                .join(",")}}')`,
+                                .join(",")}}')`
                           )
                           .join(",")};
                 `
@@ -2445,7 +2446,7 @@ export class DAO {
 
   async insertGovernorCanceledEvent(
     parsed: GovernorCanceledEvent,
-    key: EventKey,
+    key: EventKey
   ) {
     await this.pg.query({
       text: `
@@ -2471,7 +2472,7 @@ export class DAO {
 
   async insertGovernorProposalDescribedEvent(
     parsed: DescribedEvent,
-    key: EventKey,
+    key: EventKey
   ) {
     await this.pg.query({
       text: `
@@ -2499,7 +2500,7 @@ export class DAO {
 
   async insertGovernorReconfiguredEvent(
     parsed: GovernorReconfiguredEvent,
-    key: EventKey,
+    key: EventKey
   ) {
     await this.pg.query({
       text: `
