@@ -298,8 +298,8 @@ export class DAO {
             recipient    NUMERIC NOT NULL,
             delegate     NUMERIC NOT NULL
         );
-        CREATE INDEX IF NOT EXISTS idx_staker_withdrawn_delegate_from_address ON staker_staked USING btree (delegate, from_address);
-        CREATE INDEX IF NOT EXISTS idx_staker_withdrawn_from_address_delegate ON staker_staked USING btree (from_address, delegate);
+        CREATE INDEX IF NOT EXISTS idx_staker_withdrawn_delegate_from_address ON staker_withdrawn USING btree (delegate, from_address);
+        CREATE INDEX IF NOT EXISTS idx_staker_withdrawn_from_address_delegate ON staker_withdrawn USING btree (from_address, delegate);
 
         CREATE TABLE IF NOT EXISTS governor_reconfigured
         (
