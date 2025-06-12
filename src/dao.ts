@@ -1058,7 +1058,7 @@ export class DAO {
                                     pk.token1,
                                     tprv.realized_volatility,
                                     tprv.volatility_in_ticks::int4,
-                                    CEIL(LOG(1::NUMERIC + (pk.fee / 0x10000000000000000::NUMERIC)) /
+                                    CEIL(LOG(1::NUMERIC + (pk.fee / 0x100000000000000000000000000000000::NUMERIC)) /
                                          LOG(1.000001))::int4                  AS fee_in_ticks,
                                     ROUND(LOG(lp.price) / LOG(1.000001))::int4 AS last_tick
                              FROM pool_keys pk
@@ -1348,7 +1348,7 @@ export class DAO {
                            SUM(CASE WHEN swaps.delta0 >= 0 THEN swaps.delta0 ELSE swaps.delta1 END) AS   volume,
                            SUM(FLOOR(((CASE WHEN delta0 >= 0 THEN swaps.delta0 ELSE swaps.delta1 END) *
                                       pool_keys.fee) /
-                                     0x10000000000000000))                                          AS   fees,
+                                     0x100000000000000000000000000000000::numeric))                                          AS   fees,
                            COUNT(1)                                                                 AS   swap_count
                     FROM swaps
                              JOIN pool_keys ON swaps.pool_key_hash = pool_keys.key_hash
