@@ -1152,118 +1152,43 @@ export class DAO {
             p_smoothing_duration BIGINT
         ) RETURNS NUMERIC AS $$
         DECLARE
-            current_weight NUMERIC := 0;
-            current_target NUMERIC := 0;
-            event_record RECORD;
+          total_weight NUMERIC;
         BEGIN
-            -- If no smoothing, return final delegated amount (rounded down)
-            IF p_smoothing_duration = 0 THEN
-                SELECT COALESCE(SUM(
-                    CASE 
-                        WHEN stake_events.event_type = 'stake' THEN stake_events.amount
-                        ELSE -stake_events.amount
-                    END
-                ), 0) INTO current_target
-                FROM (
-                    SELECT b.time AS event_time, ss.amount, 'stake' AS event_type
-                    FROM staker_staked ss
-                    JOIN event_keys ek ON ss.event_id = ek.id
-                    JOIN blocks b ON ek.block_number = b.number
-                    WHERE ss.delegate = p_delegate AND b.time < p_target_time
-                    
-                    UNION ALL
-                    
-                    SELECT b.time AS event_time, sw.amount, 'withdraw' AS event_type
-                    FROM staker_withdrawn sw
-                    JOIN event_keys ek ON sw.event_id = ek.id
-                    JOIN blocks b ON ek.block_number = b.number
-                    WHERE sw.delegate = p_delegate AND b.time < p_target_time
-                ) stake_events;
-                
-                RETURN FLOOR(GREATEST(current_target, 0));
-            END IF;
-            
-            -- Process events chronologically to simulate voting weight progression
-            -- Group events by timestamp to handle concurrent stake/unstake properly
-            FOR event_record IN (
-                SELECT 
-                    event_time,
-                    cumulative_amount,
-                    LAG(event_time) OVER (ORDER BY event_time) AS prev_event_time,
-                    LAG(cumulative_amount) OVER (ORDER BY event_time) AS prev_cumulative_amount
-                FROM (
-                    SELECT 
-                        event_time,
-                        SUM(net_amount_change) OVER (ORDER BY event_time ROWS UNBOUNDED PRECEDING) AS cumulative_amount
-                    FROM (
-                        SELECT 
-                            b.time AS event_time,
-                            SUM(
-                                CASE 
-                                    WHEN stake_events.event_type = 'stake' THEN stake_events.amount
-                                    ELSE -stake_events.amount
-                                END
-                            ) AS net_amount_change
-                        FROM (
-                            SELECT ss.event_id, ss.delegate, ss.amount, 'stake' AS event_type
-                            FROM staker_staked ss
-                            WHERE ss.delegate = p_delegate
-                            
-                            UNION ALL
-                            
-                            SELECT sw.event_id, sw.delegate, sw.amount, 'withdraw' AS event_type
-                            FROM staker_withdrawn sw
-                            WHERE sw.delegate = p_delegate
-                        ) stake_events
-                        JOIN event_keys ek ON stake_events.event_id = ek.id
-                        JOIN blocks b ON ek.block_number = b.number
-                        WHERE b.time < p_target_time
-                        GROUP BY b.time
-                        ORDER BY b.time
-                    ) grouped_events
-                ) cumulative_events
-            ) LOOP
-                -- If this is the first event
-                IF event_record.prev_event_time IS NULL THEN
-                    current_weight := 0;
-                    current_target := event_record.cumulative_amount;
-                ELSE
-                    -- Calculate how much time has passed since the previous event
-                    DECLARE
-                        time_elapsed NUMERIC := EXTRACT(EPOCH FROM (event_record.event_time - event_record.prev_event_time));
-                    BEGIN
-                        -- Update current weight based on progression toward previous target
-                        IF time_elapsed >= p_smoothing_duration THEN
-                            current_weight := event_record.prev_cumulative_amount;
-                        ELSE
-                            current_weight := current_weight + 
-                                (event_record.prev_cumulative_amount - current_weight) * 
-                                (time_elapsed / p_smoothing_duration);
-                        END IF;
-                        
-                        -- Set new target
-                        current_target := event_record.cumulative_amount;
-                    END;
-                END IF;
-            END LOOP;
-            
-            -- Calculate final weight at target time
-            IF event_record.event_time IS NOT NULL THEN
-                DECLARE
-                    final_time_elapsed NUMERIC := EXTRACT(EPOCH FROM (p_target_time - event_record.event_time));
-                BEGIN
-                    IF final_time_elapsed >= p_smoothing_duration THEN
-                        current_weight := current_target;
-                    ELSE
-                        current_weight := current_weight + 
-                            (current_target - current_weight) * 
-                            (final_time_elapsed / p_smoothing_duration);
-                    END IF;
-                END;
-            END IF;
-            
-            -- Return rounded down voting weight
-            RETURN FLOOR(GREATEST(current_weight, 0));
+          SELECT FLOOR(COALESCE(SUM(
+            -- signed delta times ramp factor
+            (CASE WHEN se.event_type = 'stake' THEN se.amount ELSE -se.amount END)
+            * LEAST(
+                GREATEST(
+                  EXTRACT(EPOCH FROM (p_target_time - b.time)) 
+                  / p_smoothing_duration,
+                0),
+              1)
+          ), 0))
+          INTO total_weight
+          FROM (
+            -- pull every stake event for this delegate
+            SELECT amount,
+                  'stake'   AS event_type,
+                  event_id
+              FROM staker_staked
+            WHERE delegate = p_delegate
+
+            UNION ALL
+
+            -- pull every withdraw event for this delegate
+            SELECT amount,
+                  'withdraw' AS event_type,
+                  event_id
+              FROM staker_withdrawn
+            WHERE delegate = p_delegate
+          ) AS se
+          -- now join each event to its timestamp
+          JOIN event_keys ek ON se.event_id = ek.id
+          JOIN blocks     b  ON ek.block_number = b.number
+          -- only consider events *before* voting starts
+          WHERE b.time < p_target_time;
+
+          RETURN total_weight;
         END;
         $$ LANGUAGE plpgsql;
 
@@ -1897,7 +1822,7 @@ export class DAO {
 
   public async insertPositionTransferEvent(
     transfer: TransferEvent,
-    key: EventKey,
+    key: EventKey
   ) {
     // The `*` operator is the PostgreSQL range intersection operator.
     await this.pg.query({
@@ -1929,7 +1854,7 @@ export class DAO {
 
   public async insertPositionMintedWithReferrerEvent(
     minted: PositionMintedWithReferrer,
-    key: EventKey,
+    key: EventKey
   ) {
     await this.pg.query({
       text: `
@@ -1958,7 +1883,7 @@ export class DAO {
 
   public async insertPositionUpdatedEvent(
     event: PositionUpdatedEvent,
-    key: EventKey,
+    key: EventKey
   ) {
     const pool_key_hash = await this.insertPoolKeyHash(event.pool_key);
 
@@ -2005,7 +1930,7 @@ export class DAO {
 
   public async insertPositionFeesCollectedEvent(
     event: PositionFeesCollectedEvent,
-    key: EventKey,
+    key: EventKey
   ) {
     const pool_key_hash = await this.insertPoolKeyHash(event.pool_key);
 
@@ -2050,7 +1975,7 @@ export class DAO {
 
   public async insertInitializationEvent(
     event: PoolInitializationEvent,
-    key: EventKey,
+    key: EventKey
   ) {
     const pool_key_hash = await this.insertPoolKeyHash(event.pool_key);
 
@@ -2085,7 +2010,7 @@ export class DAO {
 
   public async insertProtocolFeesWithdrawn(
     event: ProtocolFeesWithdrawnEvent,
-    key: EventKey,
+    key: EventKey
   ) {
     await this.pg.query({
       text: `
@@ -2116,7 +2041,7 @@ export class DAO {
 
   public async insertProtocolFeesPaid(
     event: ProtocolFeesPaidEvent,
-    key: EventKey,
+    key: EventKey
   ) {
     const pool_key_hash = await this.insertPoolKeyHash(event.pool_key);
 
@@ -2161,7 +2086,7 @@ export class DAO {
 
   public async insertFeesAccumulatedEvent(
     event: FeesAccumulatedEvent,
-    key: EventKey,
+    key: EventKey
   ) {
     const pool_key_hash = await this.insertPoolKeyHash(event.pool_key);
 
@@ -2196,7 +2121,7 @@ export class DAO {
 
   public async insertRegistration(
     event: TokenRegistrationEvent,
-    key: EventKey,
+    key: EventKey
   ) {
     await this.pg.query({
       text: `
@@ -2232,7 +2157,7 @@ export class DAO {
 
   public async insertRegistrationV3(
     event: TokenRegistrationEventV3,
-    key: EventKey,
+    key: EventKey
   ) {
     await this.pg.query({
       text: `
@@ -2325,12 +2250,12 @@ export class DAO {
 
   public async insertTWAMMOrderUpdatedEvent(
     order_updated: OrderUpdatedEvent,
-    key: EventKey,
+    key: EventKey
   ) {
     const { order_key } = order_updated;
 
     const key_hash = await this.insertPoolKeyHash(
-      orderKeyToPoolKey(key, order_key),
+      orderKeyToPoolKey(key, order_key)
     );
 
     const [sale_rate_delta0, sale_rate_delta1] =
@@ -2378,12 +2303,12 @@ export class DAO {
 
   public async insertTWAMMOrderProceedsWithdrawnEvent(
     order_proceeds_withdrawn: OrderProceedsWithdrawnEvent,
-    key: EventKey,
+    key: EventKey
   ) {
     const { order_key } = order_proceeds_withdrawn;
 
     const key_hash = await this.insertPoolKeyHash(
-      orderKeyToPoolKey(key, order_key),
+      orderKeyToPoolKey(key, order_key)
     );
 
     const [amount0, amount1] =
@@ -2423,7 +2348,7 @@ export class DAO {
 
   public async insertTWAMMVirtualOrdersExecutedEvent(
     virtual_orders_executed: VirtualOrdersExecutedEvent,
-    key: EventKey,
+    key: EventKey
   ) {
     let { key: state_key } = virtual_orders_executed;
 
@@ -2523,7 +2448,7 @@ export class DAO {
 
   async insertGovernorProposedEvent(
     parsed: GovernorProposedEvent,
-    key: EventKey,
+    key: EventKey
   ) {
     const query =
       parsed.calls.length > 0
@@ -2547,7 +2472,7 @@ export class DAO {
                                 call.selector
                               }, '{${call.calldata
                                 .map((c) => c.toString())
-                                .join(",")}}')`,
+                                .join(",")}}')`
                           )
                           .join(",")};
                 `
@@ -2578,7 +2503,7 @@ export class DAO {
 
   async insertGovernorExecutedEvent(
     parsed: GovernorExecutedEvent,
-    key: EventKey,
+    key: EventKey
   ) {
     const query =
       parsed.result_data.length > 0
@@ -2600,7 +2525,7 @@ export class DAO {
                             (results, ix) =>
                               `($6, ${ix}, '{${results
                                 .map((c) => c.toString())
-                                .join(",")}}')`,
+                                .join(",")}}')`
                           )
                           .join(",")};
                 `
@@ -2657,7 +2582,7 @@ export class DAO {
 
   async insertGovernorCanceledEvent(
     parsed: GovernorCanceledEvent,
-    key: EventKey,
+    key: EventKey
   ) {
     await this.pg.query({
       text: `
@@ -2683,7 +2608,7 @@ export class DAO {
 
   async insertGovernorProposalDescribedEvent(
     parsed: DescribedEvent,
-    key: EventKey,
+    key: EventKey
   ) {
     await this.pg.query({
       text: `
@@ -2711,7 +2636,7 @@ export class DAO {
 
   async insertGovernorReconfiguredEvent(
     parsed: GovernorReconfiguredEvent,
-    key: EventKey,
+    key: EventKey
   ) {
     await this.pg.query({
       text: `
