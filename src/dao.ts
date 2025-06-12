@@ -1265,7 +1265,7 @@ export class DAO {
             voting_weight,
             voting_start_time
         FROM voting_weight_calculation
-        WHERE net_delegated_amount > 0 AND voting_weight > 0
+        WHERE voting_weight > 0
         );
         
         CREATE MATERIALIZED VIEW IF NOT EXISTS proposal_delegate_voting_weights_materialized AS
