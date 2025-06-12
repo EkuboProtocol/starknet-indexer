@@ -35,6 +35,7 @@ import type {
 } from "./events/tokenRegistry";
 import type { SnapshotEvent } from "./events/oracle";
 import type { OrderClosedEvent, OrderPlacedEvent } from "./events/limitOrders";
+import type { LiquidityUpdatedEvent } from "./events/spline.ts";
 
 const MAX_TICK_SPACING = 354892;
 const LIMIT_ORDER_TICK_SPACING = 128;
@@ -2637,6 +2638,47 @@ export class DAO {
         parsed.order_key.tick,
         parsed.amount0,
         parsed.amount1,
+      ],
+    });
+  }
+
+  public async insertLiquidityUpdatedEvent(event: LiquidityUpdatedEvent, key: EventKey) {
+    const pool_key_hash = await this.insertPoolKeyHash(event.pool_key);
+  
+    await this.pg.query({
+      text: `
+            WITH inserted_event AS (
+                INSERT INTO event_keys (block_number, transaction_index, event_index, transaction_hash, emitter)
+                    VALUES ($1, $2, $3, $4, $5)
+                    RETURNING id)
+            INSERT
+            INTO liquidity_updated
+            (event_id,
+             pool_key_hash,
+             sender,
+             liquidity_factor,
+             shares,
+             amount0,
+             amount1,
+             protocol_fees0,
+             protocol_fees1)
+            VALUES ((SELECT id FROM inserted_event), $6, $7, $8, $9, $10, $11, $12, $13);
+        `,
+      values: [
+        key.blockNumber,
+        key.transactionIndex,
+        key.eventIndex,
+        key.transactionHash,
+        key.emitter,
+  
+        pool_key_hash,
+        event.sender,
+        event.liquidity_factor,
+        event.shares,
+        event.amount0,
+        event.amount1,
+        event.protocol_fees0,
+        event.protocol_fees1,
       ],
     });
   }
