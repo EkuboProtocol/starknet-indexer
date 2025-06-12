@@ -1156,7 +1156,7 @@ export class DAO {
             current_target NUMERIC := 0;
             event_record RECORD;
         BEGIN
-            -- If no smoothing, return final delegated amount
+            -- If no smoothing, return final delegated amount (rounded down)
             IF p_smoothing_duration = 0 THEN
                 SELECT COALESCE(SUM(
                     CASE 
@@ -1180,42 +1180,48 @@ export class DAO {
                     WHERE sw.delegate = p_delegate AND b.time < p_target_time
                 ) stake_events;
                 
-                RETURN GREATEST(current_target, 0);
+                RETURN FLOOR(GREATEST(current_target, 0));
             END IF;
             
             -- Process events chronologically to simulate voting weight progression
+            -- Group events by timestamp to handle concurrent stake/unstake properly
             FOR event_record IN (
                 SELECT 
                     event_time,
                     cumulative_amount,
-                    LAG(event_time) OVER (ORDER BY event_time, event_order) AS prev_event_time,
-                    LAG(cumulative_amount) OVER (ORDER BY event_time, event_order) AS prev_cumulative_amount
+                    LAG(event_time) OVER (ORDER BY event_time) AS prev_event_time,
+                    LAG(cumulative_amount) OVER (ORDER BY event_time) AS prev_cumulative_amount
                 FROM (
                     SELECT 
-                        b.time AS event_time,
-                        SUM(
-                            CASE 
-                                WHEN stake_events.event_type = 'stake' THEN stake_events.amount
-                                ELSE -stake_events.amount
-                            END
-                        ) OVER (ORDER BY b.time, stake_events.event_order ROWS UNBOUNDED PRECEDING) AS cumulative_amount,
-                        stake_events.event_order
+                        event_time,
+                        SUM(net_amount_change) OVER (ORDER BY event_time ROWS UNBOUNDED PRECEDING) AS cumulative_amount
                     FROM (
-                        SELECT ss.event_id, ss.delegate, ss.amount, 'stake' AS event_type, 1 AS event_order
-                        FROM staker_staked ss
-                        WHERE ss.delegate = p_delegate
-                        
-                        UNION ALL
-                        
-                        SELECT sw.event_id, sw.delegate, sw.amount, 'withdraw' AS event_type, 2 AS event_order
-                        FROM staker_withdrawn sw
-                        WHERE sw.delegate = p_delegate
-                    ) stake_events
-                    JOIN event_keys ek ON stake_events.event_id = ek.id
-                    JOIN blocks b ON ek.block_number = b.number
-                    WHERE b.time < p_target_time
-                    ORDER BY b.time, stake_events.event_order
-                ) ordered_events
+                        SELECT 
+                            b.time AS event_time,
+                            SUM(
+                                CASE 
+                                    WHEN stake_events.event_type = 'stake' THEN stake_events.amount
+                                    ELSE -stake_events.amount
+                                END
+                            ) AS net_amount_change
+                        FROM (
+                            SELECT ss.event_id, ss.delegate, ss.amount, 'stake' AS event_type
+                            FROM staker_staked ss
+                            WHERE ss.delegate = p_delegate
+                            
+                            UNION ALL
+                            
+                            SELECT sw.event_id, sw.delegate, sw.amount, 'withdraw' AS event_type
+                            FROM staker_withdrawn sw
+                            WHERE sw.delegate = p_delegate
+                        ) stake_events
+                        JOIN event_keys ek ON stake_events.event_id = ek.id
+                        JOIN blocks b ON ek.block_number = b.number
+                        WHERE b.time < p_target_time
+                        GROUP BY b.time
+                        ORDER BY b.time
+                    ) grouped_events
+                ) cumulative_events
             ) LOOP
                 -- If this is the first event
                 IF event_record.prev_event_time IS NULL THEN
@@ -1242,7 +1248,7 @@ export class DAO {
             END LOOP;
             
             -- Calculate final weight at target time
-            IF current_target > 0 AND event_record.event_time IS NOT NULL THEN
+            IF event_record.event_time IS NOT NULL THEN
                 DECLARE
                     final_time_elapsed NUMERIC := EXTRACT(EPOCH FROM (p_target_time - event_record.event_time));
                 BEGIN
@@ -1256,7 +1262,8 @@ export class DAO {
                 END;
             END IF;
             
-            RETURN GREATEST(current_weight, 0);
+            -- Return rounded down voting weight
+            RETURN FLOOR(GREATEST(current_weight, 0));
         END;
         $$ LANGUAGE plpgsql;
 
