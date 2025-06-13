@@ -1160,6 +1160,7 @@ export class DAO {
           JOIN blocks b            ON ek.block_number   = b.number
           JOIN governor_reconfigured gr
             ON gp.config_version    = gr.version
+          WHERE b.time + gr.voting_start_delay * INTERVAL '1 second' <= now()
         )
         SELECT
           pt.proposal_id,
