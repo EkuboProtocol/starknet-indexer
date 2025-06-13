@@ -1267,7 +1267,6 @@ export class DAO {
             voting_weight
         FROM proposal_delegate_voting_weights_view
         );
-        CREATE INDEX IF NOT EXISTS idx_proposal_delegate_voting_weights_proposal_id ON proposal_delegate_voting_weights_materialized USING btree (proposal_id);
         CREATE UNIQUE INDEX IF NOT EXISTS idx_proposal_delegate_voting_weights_unique ON proposal_delegate_voting_weights_materialized (proposal_id, delegate);
 
         CREATE OR REPLACE FUNCTION calculate_staker_rewards(
@@ -1708,6 +1707,7 @@ export class DAO {
       REFRESH MATERIALIZED VIEW CONCURRENTLY latest_token_registrations;
       REFRESH MATERIALIZED VIEW CONCURRENTLY token_pair_realized_volatility;
       REFRESH MATERIALIZED VIEW CONCURRENTLY pool_market_depth;
+      REFRESH MATERIALIZED VIEW CONCURRENTLY proposal_delegate_voting_weights_materialized;
     `);
   }
 
@@ -1718,7 +1718,6 @@ export class DAO {
       REFRESH MATERIALIZED VIEW CONCURRENTLY twamm_sale_rate_deltas_materialized;
       REFRESH MATERIALIZED VIEW CONCURRENTLY oracle_pool_states_materialized;
       REFRESH MATERIALIZED VIEW CONCURRENTLY limit_order_pool_states_materialized;
-      REFRESH MATERIALIZED VIEW CONCURRENTLY proposal_delegate_voting_weights_materialized;
     `);
   }
 
