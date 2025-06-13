@@ -244,6 +244,7 @@ export class DAO {
             liquidity_after  NUMERIC NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_swaps_pool_key_hash_event_id ON swaps USING btree (pool_key_hash, event_id);
+        CREATE INDEX IF NOT EXISTS idx_swaps_pool_key_hash_event_id_desc ON swaps USING btree (pool_key_hash, event_id DESC) INCLUDE (sqrt_ratio_after, tick_after, liquidity_after);
 
         CREATE TABLE IF NOT EXISTS position_minted_with_referrer
         (
@@ -1057,7 +1058,7 @@ export class DAO {
                                     pk.token1,
                                     tprv.realized_volatility,
                                     tprv.volatility_in_ticks::int4,
-                                    CEIL(LOG(1::NUMERIC + (pk.fee / 0x10000000000000000::NUMERIC)) /
+                                    CEIL(LOG(1::NUMERIC + (pk.fee / 0x100000000000000000000000000000000::NUMERIC)) /
                                          LOG(1.000001))::int4                  AS fee_in_ticks,
                                     ROUND(LOG(lp.price) / LOG(1.000001))::int4 AS last_tick
                              FROM pool_keys pk
@@ -1463,69 +1464,72 @@ export class DAO {
   public async refreshAnalyticalTables({ since }: { since: Date }) {
     await this.pg.query({
       text: `
-                INSERT INTO hourly_volume_by_token
-                    (SELECT swaps.pool_key_hash                                                      AS   key_hash,
-                            DATE_TRUNC('hour', blocks.time)                                          AS   hour,
-                            (CASE WHEN swaps.delta0 >= 0 THEN pool_keys.token0 ELSE pool_keys.token1 END) token,
-                            SUM(CASE WHEN swaps.delta0 >= 0 THEN swaps.delta0 ELSE swaps.delta1 END) AS   volume,
-                            SUM(FLOOR(((CASE WHEN delta0 >= 0 THEN swaps.delta0 ELSE swaps.delta1 END) *
-                                       pool_keys.fee) /
-                                      340282366920938463463374607431768211456))                      AS   fees,
-                            COUNT(1)                                                                 AS   swap_count
-                     FROM swaps
-                              JOIN pool_keys ON swaps.pool_key_hash = pool_keys.key_hash
-                              JOIN event_keys ON swaps.event_id = event_keys.id
-                              JOIN blocks ON event_keys.block_number = blocks.number
-                     WHERE DATE_TRUNC('hour', blocks.time) >= DATE_TRUNC('hour', $1::timestamptz)
-                     GROUP BY hour, swaps.pool_key_hash, token)
+                WITH swap_data AS (
+                    SELECT swaps.pool_key_hash                                                      AS   key_hash,
+                           DATE_TRUNC('hour', blocks.time)                                          AS   hour,
+                           (CASE WHEN swaps.delta0 >= 0 THEN pool_keys.token0 ELSE pool_keys.token1 END) token,
+                           SUM(CASE WHEN swaps.delta0 >= 0 THEN swaps.delta0 ELSE swaps.delta1 END) AS   volume,
+                           SUM(FLOOR(((CASE WHEN delta0 >= 0 THEN swaps.delta0 ELSE swaps.delta1 END) *
+                                      pool_keys.fee) /
+                                     0x100000000000000000000000000000000::numeric))                                          AS   fees,
+                           COUNT(1)                                                                 AS   swap_count
+                    FROM swaps
+                             JOIN pool_keys ON swaps.pool_key_hash = pool_keys.key_hash
+                             JOIN event_keys ON swaps.event_id = event_keys.id
+                             JOIN blocks ON event_keys.block_number = blocks.number
+                    WHERE DATE_TRUNC('hour', blocks.time) >= DATE_TRUNC('hour', $1::timestamptz)
+                    GROUP BY hour, swaps.pool_key_hash, token
+                ),
+                fees_token0 AS (
+                    SELECT fa.pool_key_hash                AS key_hash,
+                           DATE_TRUNC('hour', blocks.time) AS hour,
+                           pool_keys.token0                AS token,
+                           0                               AS volume,
+                           SUM(fa.amount0)                 AS fees,
+                           0                               AS swap_count
+                    FROM fees_accumulated fa
+                             JOIN pool_keys ON fa.pool_key_hash = pool_keys.key_hash
+                             JOIN event_keys ON fa.event_id = event_keys.id
+                             JOIN blocks ON event_keys.block_number = blocks.number
+                    WHERE DATE_TRUNC('hour', blocks.time) >= DATE_TRUNC('hour', $1::timestamptz)
+                      AND fa.amount0 > 0
+                    GROUP BY hour, fa.pool_key_hash, token
+                ),
+                fees_token1 AS (
+                    SELECT fa.pool_key_hash                AS key_hash,
+                           DATE_TRUNC('hour', blocks.time) AS hour,
+                           pool_keys.token1                AS token,
+                           0                               AS volume,
+                           SUM(fa.amount1)                 AS fees,
+                           0                               AS swap_count
+                    FROM fees_accumulated fa
+                             JOIN pool_keys ON fa.pool_key_hash = pool_keys.key_hash
+                             JOIN event_keys ON fa.event_id = event_keys.id
+                             JOIN blocks ON event_keys.block_number = blocks.number
+                    WHERE DATE_TRUNC('hour', blocks.time) >= DATE_TRUNC('hour', $1::timestamptz)
+                      AND fa.amount1 > 0
+                    GROUP BY hour, fa.pool_key_hash, token
+                ),
+                combined_data AS (
+                    SELECT key_hash, hour, token, volume, fees, swap_count FROM swap_data
+                    UNION ALL
+                    SELECT key_hash, hour, token, volume, fees, swap_count FROM fees_token0
+                    UNION ALL
+                    SELECT key_hash, hour, token, volume, fees, swap_count FROM fees_token1
+                )
+                INSERT INTO hourly_volume_by_token (key_hash, hour, token, volume, fees, swap_count)
+                SELECT key_hash,
+                       hour,
+                       token,
+                       SUM(volume)     AS volume,
+                       SUM(fees)       AS fees,
+                       SUM(swap_count) AS swap_count
+                FROM combined_data
+                GROUP BY key_hash, hour, token
                 ON CONFLICT (key_hash, hour, token)
                     DO UPDATE SET volume     = excluded.volume,
                                   fees       = excluded.fees,
                                   swap_count = excluded.swap_count;
-            `,
-      values: [since],
-    });
-
-    await this.pg.query({
-      text: `
-                INSERT INTO hourly_volume_by_token
-                    (SELECT fa.pool_key_hash                AS key_hash,
-                            DATE_TRUNC('hour', blocks.time) AS hour,
-                            pool_keys.token0                AS token,
-                            0                               AS volume,
-                            SUM(fa.amount0)                 AS fees,
-                            0                               AS swap_count
-                     FROM fees_accumulated fa
-                              JOIN pool_keys ON fa.pool_key_hash = pool_keys.key_hash
-                              JOIN event_keys ON fa.event_id = event_keys.id
-                              JOIN blocks ON event_keys.block_number = blocks.number
-                     WHERE DATE_TRUNC('hour', blocks.time) >= DATE_TRUNC('hour', $1::timestamptz)
-                       AND fa.amount0 > 0
-                     GROUP BY hour, fa.pool_key_hash, token)
-                ON CONFLICT (key_hash, hour, token)
-                    DO UPDATE SET fees = excluded.fees + hourly_volume_by_token.fees;
-            `,
-      values: [since],
-    });
-
-    await this.pg.query({
-      text: `
-                INSERT INTO hourly_volume_by_token
-                    (SELECT fa.pool_key_hash                AS key_hash,
-                            DATE_TRUNC('hour', blocks.time) AS hour,
-                            pool_keys.token1                AS token,
-                            0                               AS volume,
-                            SUM(fa.amount1)                 AS fees,
-                            0                               AS swap_count
-                     FROM fees_accumulated fa
-                              JOIN pool_keys ON fa.pool_key_hash = pool_keys.key_hash
-                              JOIN event_keys ON fa.event_id = event_keys.id
-                              JOIN blocks ON event_keys.block_number = blocks.number
-                     WHERE DATE_TRUNC('hour', blocks.time) >= DATE_TRUNC('hour', $1::timestamptz)
-                       AND fa.amount1 > 0
-                     GROUP BY hour, fa.pool_key_hash, token)
-                ON CONFLICT (key_hash, hour, token)
-                    DO UPDATE SET fees = excluded.fees + hourly_volume_by_token.fees;
             `,
       values: [since],
     });
