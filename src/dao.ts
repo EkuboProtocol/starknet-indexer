@@ -299,8 +299,8 @@ export class DAO {
             recipient    NUMERIC NOT NULL,
             delegate     NUMERIC NOT NULL
         );
-        CREATE INDEX IF NOT EXISTS idx_staker_withdrawn_delegate_from_address ON staker_staked USING btree (delegate, from_address);
-        CREATE INDEX IF NOT EXISTS idx_staker_withdrawn_from_address_delegate ON staker_staked USING btree (from_address, delegate);
+        CREATE INDEX IF NOT EXISTS idx_staker_withdrawn_delegate_from_address ON staker_withdrawn USING btree (delegate, from_address);
+        CREATE INDEX IF NOT EXISTS idx_staker_withdrawn_from_address_delegate ON staker_withdrawn USING btree (from_address, delegate);
 
         CREATE TABLE IF NOT EXISTS governor_reconfigured
         (
@@ -1147,6 +1147,129 @@ export class DAO {
         END;
         $$;
 
+        CREATE OR REPLACE VIEW proposal_delegate_voting_weights_view AS
+        (
+          WITH proposal_times AS (
+          SELECT
+            gp.id             AS proposal_id,
+            b.time            AS proposal_time,
+            b.time + gr.voting_start_delay * INTERVAL '1 second' AS vote_start,
+            gr.voting_start_delay                        AS window_secs
+          FROM governor_proposed gp
+          JOIN event_keys ek       ON gp.event_id       = ek.id
+          JOIN blocks b            ON ek.block_number   = b.number
+          JOIN governor_reconfigured gr
+            ON gp.config_version    = gr.version
+        )
+        SELECT
+          pt.proposal_id,
+          ev.delegate,
+          -- integral(stake * dt)/window_secs
+          FLOOR(ev.weighted_time_sum / pt.window_secs) AS voting_weight
+        FROM proposal_times pt
+        JOIN LATERAL (
+          WITH events AS (
+            -- all stake/unstake deltas inside window
+            SELECT s.delegate, bl.time,        s.amount    AS delta
+            FROM staker_staked s
+            JOIN event_keys esk ON s.event_id = esk.id
+            JOIN blocks bl      ON esk.block_number = bl.number
+            WHERE bl.time BETWEEN pt.proposal_time AND pt.vote_start
+
+            UNION ALL
+
+            SELECT w.delegate, bl.time,      -w.amount    AS delta
+            FROM staker_withdrawn w
+            JOIN event_keys ew ON w.event_id = ew.id
+            JOIN blocks bl      ON ew.block_number = bl.number
+            WHERE bl.time BETWEEN pt.proposal_time AND pt.vote_start
+
+            UNION ALL
+            -- “bootstrap” each delegate's stake at proposal_time
+            SELECT
+              s2.delegate,
+              pt.proposal_time AS time,
+              SUM(s2.amount)   AS delta
+            FROM staker_staked s2
+            JOIN event_keys ek2 ON s2.event_id = ek2.id
+            JOIN blocks bl2     ON ek2.block_number = bl2.number
+            WHERE bl2.time < pt.proposal_time
+            GROUP BY s2.delegate
+
+            UNION ALL
+
+            SELECT
+              w2.delegate,
+              pt.proposal_time AS time,
+              -SUM(w2.amount)  AS delta
+            FROM staker_withdrawn w2
+            JOIN event_keys ek3 ON w2.event_id = ek3.id
+            JOIN blocks bl3     ON ek3.block_number = bl3.number
+            WHERE bl3.time < pt.proposal_time
+            GROUP BY w2.delegate
+
+            UNION ALL
+            -- sentinel at vote_start to cap last interval
+            SELECT d.delegate, pt.vote_start AS time, 0::NUMERIC AS delta
+            FROM (
+              SELECT delegate FROM staker_staked
+              UNION
+              SELECT delegate FROM staker_withdrawn
+            ) d
+          ),
+
+          -- running total = current stake for each delegate at each event‐time
+          stake_running AS (
+            SELECT
+              delegate,
+              time,
+              SUM(delta) OVER (
+                PARTITION BY delegate
+                ORDER BY time
+                ROWS UNBOUNDED PRECEDING
+              ) AS stake_amount
+            FROM events
+          ),
+
+          -- break into intervals [time, next_time) with constant stake_amount
+          intervals AS (
+            SELECT
+              delegate,
+              time         AS start_time,
+              LEAD(time) OVER (
+                PARTITION BY delegate
+                ORDER BY time
+              )        AS end_time,
+              stake_amount
+            FROM stake_running
+          )
+
+          -- integrate stake_amount * duration
+          SELECT
+            delegate,
+            SUM(
+              stake_amount
+              * EXTRACT(
+                  EPOCH FROM (end_time - start_time)
+                )
+            ) AS weighted_time_sum
+          FROM intervals
+          WHERE end_time IS NOT NULL
+          GROUP BY delegate
+        ) ev ON TRUE
+        ORDER BY pt.proposal_id, ev.delegate
+        );
+        
+        CREATE MATERIALIZED VIEW IF NOT EXISTS proposal_delegate_voting_weights_materialized AS
+        (
+        SELECT 
+            proposal_id,
+            delegate,
+            voting_weight
+        FROM proposal_delegate_voting_weights_view
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_proposal_delegate_voting_weights_unique ON proposal_delegate_voting_weights_materialized (proposal_id, delegate);
+
         CREATE OR REPLACE FUNCTION calculate_staker_rewards(
             start_time timestamptz,
             end_time timestamptz,
@@ -1588,6 +1711,7 @@ export class DAO {
       REFRESH MATERIALIZED VIEW CONCURRENTLY latest_token_registrations;
       REFRESH MATERIALIZED VIEW CONCURRENTLY token_pair_realized_volatility;
       REFRESH MATERIALIZED VIEW CONCURRENTLY pool_market_depth;
+      REFRESH MATERIALIZED VIEW CONCURRENTLY proposal_delegate_voting_weights_materialized;
     `);
   }
 
