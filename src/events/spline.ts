@@ -11,7 +11,7 @@ import {
     token0: { index: 0, parser: parseAddress },
     token1: { index: 1, parser: parseAddress },
     fee: { index: 2, parser: parseU128 },
-    tick_spacing: { index: 3, parser: parseI129 },
+    tick_spacing: { index: 3, parser: parseU128 },
     extension: { index: 4, parser: parseAddress },
   });
   export type PoolKey = GetParserType<typeof parsePoolKey>;
