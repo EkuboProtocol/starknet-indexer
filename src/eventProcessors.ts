@@ -480,7 +480,7 @@ export const EVENT_PROCESSORS = [
       fromAddress: process.env.LIQUIDITY_PROVIDER_ADDRESS,
       keys: [
         // LiquidityUpdated
-        "0x0391ea9b1e698734f6443b1a1fd332344125091ecef3a813c66937e70d3a191c",
+        "0x0203c047cc01ab425e271dd20fc0651f0e3ed06fb6545850508001db3c822b5d",
       ],
     },
     parser: parseLiquidityUpdated,
