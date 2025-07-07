@@ -726,6 +726,7 @@ export class DAO {
             amount    NUMERIC NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_limit_order_placed_owner_salt ON limit_order_placed USING btree (owner, salt);
+        CREATE INDEX IF NOT EXISTS idx_limit_order_placed_salt_event_id_desc ON limit_order_placed (salt, event_id DESC) INCLUDE (token0, token1, tick, liquidity, amount);
 
         CREATE TABLE IF NOT EXISTS limit_order_closed
         (
@@ -742,6 +743,7 @@ export class DAO {
             amount1  NUMERIC NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_limit_order_closed ON limit_order_closed USING btree (owner, salt);
+        CREATE INDEX IF NOT EXISTS idx_limit_order_closed_salt_event_id_desc ON limit_order_closed (salt, event_id DESC) INCLUDE (amount0, amount1);
 
         CREATE OR REPLACE VIEW twamm_pool_states_view AS
         (
