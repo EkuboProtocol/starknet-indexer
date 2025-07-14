@@ -217,7 +217,7 @@ export class DAO {
             amount1       NUMERIC NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_fees_accumulated_pool_key_hash ON fees_accumulated (pool_key_hash);
-
+        
         CREATE TABLE IF NOT EXISTS pool_initializations
         (
             event_id      int8 REFERENCES event_keys (id) ON DELETE CASCADE PRIMARY KEY,
@@ -744,6 +744,22 @@ export class DAO {
         );
         CREATE INDEX IF NOT EXISTS idx_limit_order_closed ON limit_order_closed USING btree (owner, salt);
 
+        CREATE TABLE IF NOT EXISTS liquidity_updated
+        (
+            event_id         int8    NOT NULL PRIMARY KEY REFERENCES event_keys (id) ON DELETE CASCADE,
+            
+            pool_key_hash    NUMERIC NOT NULL REFERENCES pool_keys (key_hash),
+            
+            sender           NUMERIC NOT NULL,
+            liquidity_factor NUMERIC NOT NULL,
+            shares           NUMERIC NOT NULL,
+            amount0          NUMERIC NOT NULL,
+            amount1          NUMERIC NOT NULL,
+            protocol_fees0   NUMERIC NOT NULL,
+            protocol_fees1   NUMERIC NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_liquidity_updated_pool_key_hash ON liquidity_updated (pool_key_hash);
+        
         CREATE OR REPLACE VIEW twamm_pool_states_view AS
         (
         WITH lvoe_id AS (SELECT key_hash, MAX(event_id) AS event_id
@@ -853,6 +869,14 @@ export class DAO {
         SELECT pool_key_hash, last_event_id
         FROM limit_order_pool_states_view);
         CREATE UNIQUE INDEX IF NOT EXISTS idx_limit_order_pool_states_materialized_pool_key_hash ON limit_order_pool_states_materialized USING btree (pool_key_hash);
+        
+        CREATE MATERIALIZED VIEW IF NOT EXISTS spline_pools_materialized AS
+        (
+        SELECT key_hash AS pool_key_hash
+        FROM pool_keys
+        WHERE extension = 4
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_spline_pools_materialized_pool_key_hash ON spline_pools_materialized USING btree (pool_key_hash);
 
         CREATE OR REPLACE VIEW last_24h_pool_stats_view AS
         (
@@ -1596,6 +1620,7 @@ export class DAO {
       REFRESH MATERIALIZED VIEW CONCURRENTLY twamm_sale_rate_deltas_materialized;
       REFRESH MATERIALIZED VIEW CONCURRENTLY oracle_pool_states_materialized;
       REFRESH MATERIALIZED VIEW CONCURRENTLY limit_order_pool_states_materialized;
+      REFRESH MATERIALIZED VIEW CONCURRENTLY spline_pools_materialized;
     `);
   }
 
