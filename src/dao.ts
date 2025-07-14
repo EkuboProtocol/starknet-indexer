@@ -2695,7 +2695,6 @@ export class DAO {
         key.eventIndex,
         key.transactionHash,
         key.emitter,
-  
         pool_key_hash,
         event.sender,
         event.liquidity_factor,
