@@ -1052,18 +1052,24 @@ export class DAO {
         FROM realized_volatility_by_pair
         WHERE realized_volatility IS NOT NULL;
 
+        CREATE MATERIALIZED VIEW IF NOT EXISTS token_pair_realized_volatility AS
+        SELECT * FROM token_pair_realized_volatility_view;
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_token_pair_realized_volatility_pair
+            ON token_pair_realized_volatility (token0, token1);
+
         CREATE OR REPLACE VIEW pool_market_depth_view AS
-        WITH pool_states AS (SELECT pk.key_hash,
+        WITH depth_percentages AS (SELECT POWER(1.3, generate_series(0, 20)) * 0.001 AS depth_percent),
+             pool_states AS (SELECT pk.key_hash,
                                     pk.token0,
                                     pk.token1,
-                                    tprv.realized_volatility,
-                                    tprv.volatility_in_ticks::int4,
-                                    CEIL(LOG(1::NUMERIC + (pk.fee / 0x100000000000000000000000000000000::NUMERIC)) /
+                                    dp.depth_percent,
+                                    FLOOR(LN(1::NUMERIC + dp.depth_percent) / LN(1.000001))::int4 AS depth_in_ticks,
+                                    CEIL(LOG(1::NUMERIC + (pk.fee / 0x10000000000000000::NUMERIC)) /
                                          LOG(1.000001))::int4                  AS fee_in_ticks,
                                     ROUND(LOG(lp.price) / LOG(1.000001))::int4 AS last_tick
                              FROM pool_keys pk
-                                      JOIN token_pair_realized_volatility_view tprv
-                                           ON pk.token0 = tprv.token0 AND pk.token1 = tprv.token1
+                                      CROSS JOIN depth_percentages dp
                                       LEFT JOIN LATERAL (
                                  SELECT total / k_volume AS price
                                  FROM hourly_price_data hpd
@@ -1082,22 +1088,22 @@ export class DAO {
                                      JOIN pool_states ps ON ppptliv.pool_key_hash = ps.key_hash),
              depth_liquidity_ranges AS (SELECT pt.pool_key_hash,
                                                pt.liquidity,
-                                               INT4RANGE(ps.last_tick - ps.volatility_in_ticks,
+                                               ps.depth_percent,
+                                               INT4RANGE(ps.last_tick - ps.depth_in_ticks,
                                                          ps.last_tick - ps.fee_in_ticks) *
                                                INT4RANGE(pt.tick_start, pt.tick_end) AS overlap_range_below,
                                                INT4RANGE(ps.last_tick + ps.fee_in_ticks,
-                                                         ps.last_tick + ps.volatility_in_ticks) *
+                                                         ps.last_tick + ps.depth_in_ticks) *
                                                INT4RANGE(pt.tick_start, pt.tick_end) AS overlap_range_above
                                         FROM pool_ticks pt
                                                  JOIN pool_states ps ON pt.pool_key_hash = ps.key_hash
                                         WHERE liquidity != 0
-                                          AND ps.fee_in_ticks < ps.volatility_in_ticks),
+                                          AND ps.fee_in_ticks < ps.depth_in_ticks),
              token_amounts_by_pool AS (SELECT pool_key_hash,
--- compute amount1 corresponding to liquidity in overlap_range_below
+                                              depth_percent,
                                               FLOOR(SUM(liquidity *
                                                         (POWER(1.0000005::NUMERIC, UPPER(overlap_range_below)) -
                                                          POWER(1.0000005::NUMERIC, LOWER(overlap_range_below))))) AS amount1,
--- compute amount0 corresponding to liquidity in overlap_range_above
                                               FLOOR(SUM(
                                                       liquidity *
                                                       ((1::NUMERIC /
@@ -1107,362 +1113,21 @@ export class DAO {
                                        FROM depth_liquidity_ranges
                                        WHERE NOT ISEMPTY(overlap_range_below)
                                           OR NOT ISEMPTY(overlap_range_above)
-                                       GROUP BY pool_key_hash),
+                                       GROUP BY pool_key_hash, depth_percent),
              total_depth AS (SELECT pool_key_hash,
+                                    depth_percent,
                                     COALESCE(SUM(amount0), 0) AS depth0,
                                     COALESCE(SUM(amount1), 0) AS depth1
                              FROM token_amounts_by_pool tabp
-                                      JOIN pool_states ps ON tabp.pool_key_hash = ps.key_hash
-                             GROUP BY pool_key_hash, ps.realized_volatility)
-        SELECT td.pool_key_hash, ps.realized_volatility::FLOAT AS depth_percent, td.depth0, td.depth1
-        FROM total_depth td
-                 JOIN pool_states ps ON ps.key_hash = td.pool_key_hash;
-
-        CREATE MATERIALIZED VIEW IF NOT EXISTS token_pair_realized_volatility AS
-        SELECT * FROM token_pair_realized_volatility_view;
+                             GROUP BY pool_key_hash, depth_percent)
+        SELECT td.pool_key_hash, td.depth_percent AS depth_percent, td.depth0, td.depth1
+        FROM total_depth td;
 
         CREATE MATERIALIZED VIEW IF NOT EXISTS pool_market_depth AS
         SELECT * FROM pool_market_depth_view;
 
         CREATE UNIQUE INDEX IF NOT EXISTS idx_pool_market_depth
-            ON pool_market_depth (pool_key_hash);
-
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_token_pair_realized_volatility_pair
-            ON token_pair_realized_volatility (token0, token1);
-
-        CREATE OR REPLACE FUNCTION numeric_to_hex(num NUMERIC) RETURNS TEXT
-            IMMUTABLE
-            LANGUAGE plpgsql
-        AS
-        $$
-        DECLARE
-            hex       TEXT;
-            remainder NUMERIC;
-        BEGIN
-            hex := '';
-            LOOP
-                IF num = 0 THEN
-                    EXIT;
-                END IF;
-                remainder := num % 16;
-                hex := SUBSTRING('0123456789abcdef' FROM (remainder::INT + 1) FOR 1) || hex;
-                num := (num - remainder) / 16;
-            END LOOP;
-            RETURN '0x' || hex;
-        END;
-        $$;
-
-        CREATE OR REPLACE VIEW proposal_delegate_voting_weights_view AS
-        (
-          WITH proposal_times AS (
-          SELECT
-            gp.id             AS proposal_id,
-            b.time            AS proposal_time,
-            b.time + gr.voting_start_delay * INTERVAL '1 second' AS vote_start,
-            gr.voting_start_delay                        AS window_secs
-          FROM governor_proposed gp
-          JOIN event_keys ek       ON gp.event_id       = ek.id
-          JOIN blocks b            ON ek.block_number   = b.number
-          JOIN governor_reconfigured gr
-            ON gp.config_version    = gr.version
-        )
-        SELECT
-          pt.proposal_id,
-          ev.delegate,
-          -- integral(stake * dt)/window_secs
-          FLOOR(ev.weighted_time_sum / pt.window_secs) AS voting_weight
-        FROM proposal_times pt
-        JOIN LATERAL (
-          WITH events AS (
-            -- all stake/unstake deltas inside window
-            SELECT s.delegate, bl.time,        s.amount    AS delta
-            FROM staker_staked s
-            JOIN event_keys esk ON s.event_id = esk.id
-            JOIN blocks bl      ON esk.block_number = bl.number
-            WHERE bl.time BETWEEN pt.proposal_time AND pt.vote_start
-
-            UNION ALL
-
-            SELECT w.delegate, bl.time,      -w.amount    AS delta
-            FROM staker_withdrawn w
-            JOIN event_keys ew ON w.event_id = ew.id
-            JOIN blocks bl      ON ew.block_number = bl.number
-            WHERE bl.time BETWEEN pt.proposal_time AND pt.vote_start
-
-            UNION ALL
-            -- “bootstrap” each delegate's stake at proposal_time
-            SELECT
-              s2.delegate,
-              pt.proposal_time AS time,
-              SUM(s2.amount)   AS delta
-            FROM staker_staked s2
-            JOIN event_keys ek2 ON s2.event_id = ek2.id
-            JOIN blocks bl2     ON ek2.block_number = bl2.number
-            WHERE bl2.time < pt.proposal_time
-            GROUP BY s2.delegate
-
-            UNION ALL
-
-            SELECT
-              w2.delegate,
-              pt.proposal_time AS time,
-              -SUM(w2.amount)  AS delta
-            FROM staker_withdrawn w2
-            JOIN event_keys ek3 ON w2.event_id = ek3.id
-            JOIN blocks bl3     ON ek3.block_number = bl3.number
-            WHERE bl3.time < pt.proposal_time
-            GROUP BY w2.delegate
-
-            UNION ALL
-            -- sentinel at vote_start to cap last interval
-            SELECT d.delegate, pt.vote_start AS time, 0::NUMERIC AS delta
-            FROM (
-              SELECT delegate FROM staker_staked
-              UNION
-              SELECT delegate FROM staker_withdrawn
-            ) d
-          ),
-
-          -- running total = current stake for each delegate at each event‐time
-          stake_running AS (
-            SELECT
-              delegate,
-              time,
-              SUM(delta) OVER (
-                PARTITION BY delegate
-                ORDER BY time
-                ROWS UNBOUNDED PRECEDING
-              ) AS stake_amount
-            FROM events
-          ),
-
-          -- break into intervals [time, next_time) with constant stake_amount
-          intervals AS (
-            SELECT
-              delegate,
-              time         AS start_time,
-              LEAD(time) OVER (
-                PARTITION BY delegate
-                ORDER BY time
-              )        AS end_time,
-              stake_amount
-            FROM stake_running
-          )
-
-          -- integrate stake_amount * duration
-          SELECT
-            delegate,
-            SUM(
-              stake_amount
-              * EXTRACT(
-                  EPOCH FROM (end_time - start_time)
-                )
-            ) AS weighted_time_sum
-          FROM intervals
-          WHERE end_time IS NOT NULL
-          GROUP BY delegate
-        ) ev ON TRUE
-        ORDER BY pt.proposal_id, ev.delegate
-        );
-        
-        CREATE MATERIALIZED VIEW IF NOT EXISTS proposal_delegate_voting_weights_materialized AS
-        (
-        SELECT 
-            proposal_id,
-            delegate,
-            voting_weight
-        FROM proposal_delegate_voting_weights_view
-        );
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_proposal_delegate_voting_weights_unique ON proposal_delegate_voting_weights_materialized (proposal_id, delegate);
-
-        CREATE OR REPLACE FUNCTION calculate_staker_rewards(
-            start_time timestamptz,
-            end_time timestamptz,
-            total_rewards NUMERIC,
-            staking_share NUMERIC,
-            delegate_share NUMERIC
-        )
-            RETURNS TABLE
-                    (
-                        id               BIGINT,
-                        claimee          TEXT,
-                        amount           NUMERIC,
-                        delegate_portion NUMERIC,
-                        staker_portion   NUMERIC
-                    )
-        AS
-        $$
-        BEGIN
-            RETURN QUERY
-                WITH
-                    -- Step 0: Compute total duration and total rewards
-                    calculated_parameters
-                        AS (SELECT EXTRACT(EPOCH FROM (end_time - start_time))::NUMERIC AS total_duration_seconds),
-
-                    -- Step 1: Collect all time points where any stake change occurs
-                    time_points AS (SELECT DISTINCT time
-                                    FROM (SELECT b.time
-                                          FROM staker_staked s
-                                                   JOIN event_keys ek ON s.event_id = ek.id
-                                                   JOIN blocks b ON ek.block_number = b.number
-                                          WHERE b.time BETWEEN start_time AND end_time
-                                          UNION ALL
-                                          SELECT b.time
-                                          FROM staker_withdrawn w
-                                                   JOIN event_keys ek ON w.event_id = ek.id
-                                                   JOIN blocks b ON ek.block_number = b.number
-                                          WHERE b.time BETWEEN start_time AND end_time
-                                          UNION ALL
-                                          SELECT start_time
-                                          UNION ALL
-                                          SELECT end_time) t),
-
-                    ordered_time_points AS (SELECT time
-                                            FROM time_points
-                                            ORDER BY time),
-
-                    -- Step 2: Generate intervals
-                    intervals AS (SELECT time                            AS start_time,
-                                         LEAD(time) OVER (ORDER BY time) AS end_time
-                                  FROM ordered_time_points
-                                  WHERE time < end_time),
-
-                    -- Step 3: Collect all stake changes
-                    stake_changes AS (SELECT b.time,
-                                             s.from_address AS staker,
-                                             s.amount       AS amount_change
-                                      FROM staker_staked s
-                                               JOIN event_keys ek ON s.event_id = ek.id
-                                               JOIN blocks b ON ek.block_number = b.number
-                                      WHERE b.time <= end_time
-                                      UNION ALL
-                                      SELECT b.time,
-                                             w.from_address AS staker,
-                                             -w.amount      AS amount_change
-                                      FROM staker_withdrawn w
-                                               JOIN event_keys ek ON w.event_id = ek.id
-                                               JOIN blocks b ON ek.block_number = b.number
-                                      WHERE b.time <= end_time
-                                      UNION ALL
-                                      SELECT start_time     AS time,
-                                             s.from_address AS staker,
-                                             SUM(s.amount)  AS amount_change
-                                      FROM staker_staked s
-                                               JOIN event_keys ek ON s.event_id = ek.id
-                                               JOIN blocks b ON ek.block_number = b.number
-                                      WHERE b.time < start_time
-                                      GROUP BY s.from_address
-                                      UNION ALL
-                                      SELECT start_time     AS time,
-                                             w.from_address AS staker,
-                                             -SUM(w.amount) AS amount_change
-                                      FROM staker_withdrawn w
-                                               JOIN event_keys ek ON w.event_id = ek.id
-                                               JOIN blocks b ON ek.block_number = b.number
-                                      WHERE b.time < start_time
-                                      GROUP BY w.from_address),
-
-                    -- Step 4: Calculate cumulative stake
-                    stake_events AS (SELECT time,
-                                            staker,
-                                            SUM(amount_change)
-                                            OVER (PARTITION BY staker ORDER BY time ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS stake_amount
-                                     FROM stake_changes),
-
-                    -- Step 5: For each interval and staker
-                    staker_intervals AS (SELECT i.start_time,
-                                                i.end_time,
-                                                se.staker,
-                                                se.stake_amount
-                                         FROM intervals i
-                                                  JOIN stake_events se ON se.time <= i.start_time
-                                             AND NOT EXISTS (SELECT 1
-                                                             FROM stake_events se2
-                                                             WHERE se2.staker = se.staker
-                                                               AND se2.time > se.time
-                                                               AND se2.time <= i.start_time)),
-
-                    -- Step 6: Total stake per interval
-                    total_stake_per_interval AS (SELECT si.start_time,
-                                                        si.end_time,
-                                                        SUM(stake_amount) AS total_stake
-                                                 FROM staker_intervals si
-                                                 GROUP BY si.start_time, si.end_time),
-
-                    -- Step 7: Compute rewards per staker
-                    staker_rewards AS (SELECT si.staker,
-                                              si.start_time,
-                                              si.end_time,
-                                              si.stake_amount,
-                                              tsi.total_stake,
-                                              total_rewards * ((staking_share) / (staking_share + delegate_share))
-                                                  * (EXTRACT(EPOCH FROM (si.end_time - si.start_time))::NUMERIC /
-                                                     p.total_duration_seconds)
-                                                  * (si.stake_amount / tsi.total_stake) AS reward
-                                       FROM staker_intervals si
-                                                JOIN total_stake_per_interval tsi
-                                                     ON si.start_time = tsi.start_time AND si.end_time = tsi.end_time,
-                                            calculated_parameters p
-                                       WHERE tsi.total_stake > 0
-                                         AND si.stake_amount > 0
-                                         AND EXTRACT(EPOCH FROM (si.end_time - si.start_time)) > 0),
-
-                    -- Proposals and delegate rewards
-                    proposals_in_period AS (SELECT gp.id
-                                            FROM governor_proposed gp
-                                                     JOIN event_keys ek ON gp.event_id = ek.id
-                                                     JOIN blocks b ON ek.block_number = b.number
-                                            WHERE b.time BETWEEN start_time AND end_time),
-
-                    delegate_total_votes_weight AS (SELECT gv.voter AS delegate, SUM(gv.weight) AS total_weight
-                                                    FROM governor_voted gv
-                                                    WHERE gv.id IN (SELECT pip.id FROM proposals_in_period pip)
-                                                    GROUP BY gv.voter),
-
-                    total_votes_weight_in_period
-                        AS (SELECT SUM(total_weight) AS total FROM delegate_total_votes_weight),
-
-                    delegate_rewards AS (SELECT dtvw.delegate,
-                                                dtvw.total_weight * total_rewards *
-                                                (delegate_share / (staking_share + delegate_share)) /
-                                                tvwp.total AS reward
-                                         FROM delegate_total_votes_weight dtvw,
-                                              total_votes_weight_in_period tvwp,
-                                              calculated_parameters p),
-
-                    total_staker_rewards AS (SELECT staker      AS claimee,
-                                                    SUM(reward) AS reward
-                                             FROM staker_rewards
-                                             GROUP BY staker),
-
-                    all_rewards AS (SELECT delegate   AS claimee,
-                                           reward     AS delegate_reward,
-                                           0::NUMERIC AS staker_reward
-                                    FROM delegate_rewards
-                                    UNION ALL
-                                    SELECT tsr.claimee,
-                                           0::NUMERIC AS delegate_reward,
-                                           reward     AS staker_reward
-                                    FROM total_staker_rewards tsr),
-
-                    final_rewards AS (SELECT ar.claimee,
-                                             SUM(staker_reward)                        AS total_staker_reward,
-                                             SUM(delegate_reward)                      AS total_delegate_reward,
-                                             SUM(staker_reward) + SUM(delegate_reward) AS total_reward
-                                      FROM all_rewards ar
-                                      GROUP BY ar.claimee)
-
-                SELECT ROW_NUMBER() OVER (ORDER BY fr.total_reward DESC) - 1 AS id,
-                       numeric_to_hex(fr.claimee)                            AS claimee,
-                       FLOOR(fr.total_reward)                                AS amount,
-                       FLOOR(fr.total_delegate_reward)                       AS staker_portion,
-                       FLOOR(fr.total_staker_reward)                         AS delegate_portion
-                FROM final_rewards fr
-                WHERE fr.total_reward > 0
-                ORDER BY total_reward DESC;
-        END;
-        $$ LANGUAGE plpgsql;
-
+            ON pool_market_depth (pool_key_hash, depth_percent);
     `);
   }
 
