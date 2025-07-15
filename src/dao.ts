@@ -1084,8 +1084,7 @@ export class DAO {
                                    tick                                                                                     AS tick_start,
                                    LEAD(tick)
                                    OVER (PARTITION BY ppptliv.pool_key_hash ORDER BY ppptliv.tick)                          AS tick_end
-                            FROM per_pool_per_tick_liquidity_incremental_view ppptliv
-                                     JOIN pool_states ps ON ppptliv.pool_key_hash = ps.key_hash),
+                            FROM per_pool_per_tick_liquidity_incremental_view ppptliv),
              depth_liquidity_ranges AS (SELECT pt.pool_key_hash,
                                                pt.liquidity,
                                                ps.depth_percent,
