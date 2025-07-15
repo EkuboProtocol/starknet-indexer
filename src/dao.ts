@@ -300,8 +300,8 @@ export class DAO {
             recipient    NUMERIC NOT NULL,
             delegate     NUMERIC NOT NULL
         );
-        CREATE INDEX IF NOT EXISTS idx_staker_withdrawn_delegate_from_address ON staker_staked USING btree (delegate, from_address);
-        CREATE INDEX IF NOT EXISTS idx_staker_withdrawn_from_address_delegate ON staker_staked USING btree (from_address, delegate);
+        CREATE INDEX IF NOT EXISTS idx_staker_withdrawn_delegate_from_address ON staker_withdrawn USING btree (delegate, from_address);
+        CREATE INDEX IF NOT EXISTS idx_staker_withdrawn_from_address_delegate ON staker_withdrawn USING btree (from_address, delegate);
 
         CREATE TABLE IF NOT EXISTS governor_reconfigured
         (
@@ -727,6 +727,7 @@ export class DAO {
             amount    NUMERIC NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_limit_order_placed_owner_salt ON limit_order_placed USING btree (owner, salt);
+        CREATE INDEX IF NOT EXISTS idx_limit_order_placed_salt_event_id_desc ON limit_order_placed (salt, event_id DESC) INCLUDE (token0, token1, tick, liquidity, amount);
 
         CREATE TABLE IF NOT EXISTS limit_order_closed
         (
@@ -743,6 +744,7 @@ export class DAO {
             amount1  NUMERIC NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_limit_order_closed ON limit_order_closed USING btree (owner, salt);
+        CREATE INDEX IF NOT EXISTS idx_limit_order_closed_salt_event_id_desc ON limit_order_closed (salt, event_id DESC) INCLUDE (amount0, amount1);
 
         CREATE TABLE IF NOT EXISTS liquidity_updated
         (
@@ -1034,8 +1036,7 @@ export class DAO {
         FROM oracle_pool_states_view);
         CREATE UNIQUE INDEX IF NOT EXISTS idx_oracle_pool_states_materialized_pool_key_hash ON oracle_pool_states_materialized USING btree (pool_key_hash);
 
-        CREATE MATERIALIZED VIEW IF NOT EXISTS token_pair_realized_volatility AS
-        (
+        CREATE OR REPLACE VIEW token_pair_realized_volatility_view AS
         WITH times AS (SELECT blocks.time - INTERVAL '7 days' AS start_time,
                               blocks.time                     AS end_time
                        FROM blocks
@@ -1074,21 +1075,26 @@ export class DAO {
                observation_count,
                int4(FLOOR(realized_volatility / LN(1.000001::NUMERIC))) AS volatility_in_ticks
         FROM realized_volatility_by_pair
-        WHERE realized_volatility IS NOT NULL);
+        WHERE realized_volatility IS NOT NULL;
 
-        CREATE MATERIALIZED VIEW IF NOT EXISTS pool_market_depth AS
-        (
-        WITH pool_states AS (SELECT pk.key_hash,
+        CREATE MATERIALIZED VIEW IF NOT EXISTS token_pair_realized_volatility AS
+        SELECT * FROM token_pair_realized_volatility_view;
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_token_pair_realized_volatility_pair
+            ON token_pair_realized_volatility (token0, token1);
+
+        CREATE OR REPLACE VIEW pool_market_depth_view AS
+        WITH depth_percentages AS (SELECT (POWER(1.3, generate_series(0, 20)) * 0.001)::float AS depth_percent),
+             pool_states AS (SELECT pk.key_hash,
                                     pk.token0,
                                     pk.token1,
-                                    tprv.realized_volatility,
-                                    tprv.volatility_in_ticks::int4,
+                                    dp.depth_percent,
+                                    FLOOR(LN(1::NUMERIC + dp.depth_percent) / LN(1.000001))::int4 AS depth_in_ticks,
                                     CEIL(LOG(1::NUMERIC + (pk.fee / 0x10000000000000000::NUMERIC)) /
                                          LOG(1.000001))::int4                  AS fee_in_ticks,
                                     ROUND(LOG(lp.price) / LOG(1.000001))::int4 AS last_tick
                              FROM pool_keys pk
-                                      JOIN token_pair_realized_volatility tprv
-                                           ON pk.token0 = tprv.token0 AND pk.token1 = tprv.token1
+                                      CROSS JOIN depth_percentages dp
                                       LEFT JOIN LATERAL (
                                  SELECT total / k_volume AS price
                                  FROM hourly_price_data hpd
@@ -1103,26 +1109,25 @@ export class DAO {
                                    tick                                                                                     AS tick_start,
                                    LEAD(tick)
                                    OVER (PARTITION BY ppptliv.pool_key_hash ORDER BY ppptliv.tick)                          AS tick_end
-                            FROM per_pool_per_tick_liquidity_incremental_view ppptliv
-                                     JOIN pool_states ps ON ppptliv.pool_key_hash = ps.key_hash),
+                            FROM per_pool_per_tick_liquidity_incremental_view ppptliv),
              depth_liquidity_ranges AS (SELECT pt.pool_key_hash,
                                                pt.liquidity,
-                                               INT4RANGE(ps.last_tick - ps.volatility_in_ticks,
+                                               ps.depth_percent,
+                                               INT4RANGE(ps.last_tick - ps.depth_in_ticks,
                                                          ps.last_tick - ps.fee_in_ticks) *
                                                INT4RANGE(pt.tick_start, pt.tick_end) AS overlap_range_below,
                                                INT4RANGE(ps.last_tick + ps.fee_in_ticks,
-                                                         ps.last_tick + ps.volatility_in_ticks) *
+                                                         ps.last_tick + ps.depth_in_ticks) *
                                                INT4RANGE(pt.tick_start, pt.tick_end) AS overlap_range_above
                                         FROM pool_ticks pt
                                                  JOIN pool_states ps ON pt.pool_key_hash = ps.key_hash
                                         WHERE liquidity != 0
-                                          AND ps.fee_in_ticks < ps.volatility_in_ticks),
+                                          AND ps.fee_in_ticks < ps.depth_in_ticks),
              token_amounts_by_pool AS (SELECT pool_key_hash,
--- compute amount1 corresponding to liquidity in overlap_range_below
+                                              depth_percent,
                                               FLOOR(SUM(liquidity *
                                                         (POWER(1.0000005::NUMERIC, UPPER(overlap_range_below)) -
                                                          POWER(1.0000005::NUMERIC, LOWER(overlap_range_below))))) AS amount1,
--- compute amount0 corresponding to liquidity in overlap_range_above
                                               FLOOR(SUM(
                                                       liquidity *
                                                       ((1::NUMERIC /
@@ -1132,23 +1137,21 @@ export class DAO {
                                        FROM depth_liquidity_ranges
                                        WHERE NOT ISEMPTY(overlap_range_below)
                                           OR NOT ISEMPTY(overlap_range_above)
-                                       GROUP BY pool_key_hash),
+                                       GROUP BY pool_key_hash, depth_percent),
              total_depth AS (SELECT pool_key_hash,
+                                    depth_percent,
                                     COALESCE(SUM(amount0), 0) AS depth0,
                                     COALESCE(SUM(amount1), 0) AS depth1
                              FROM token_amounts_by_pool tabp
-                                      JOIN pool_states ps ON tabp.pool_key_hash = ps.key_hash
-                             GROUP BY pool_key_hash, ps.realized_volatility)
-        SELECT td.pool_key_hash, ps.realized_volatility::FLOAT AS depth_percent, td.depth0, td.depth1
-        FROM total_depth td
-                 JOIN pool_states ps ON ps.key_hash = td.pool_key_hash
-            );
+                             GROUP BY pool_key_hash, depth_percent)
+        SELECT td.pool_key_hash, td.depth_percent AS depth_percent, td.depth0, td.depth1
+        FROM total_depth td;
+
+        CREATE MATERIALIZED VIEW IF NOT EXISTS pool_market_depth AS
+        SELECT * FROM pool_market_depth_view;
 
         CREATE UNIQUE INDEX IF NOT EXISTS idx_pool_market_depth
-            ON pool_market_depth (pool_key_hash);
-
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_token_pair_realized_volatility_pair
-            ON token_pair_realized_volatility (token0, token1);
+            ON pool_market_depth (pool_key_hash, depth_percent);
 
         CREATE OR REPLACE FUNCTION numeric_to_hex(num NUMERIC) RETURNS TEXT
             IMMUTABLE
@@ -1171,6 +1174,129 @@ export class DAO {
             RETURN '0x' || hex;
         END;
         $$;
+
+        CREATE OR REPLACE VIEW proposal_delegate_voting_weights_view AS
+        (
+          WITH proposal_times AS (
+          SELECT
+            gp.id             AS proposal_id,
+            b.time            AS proposal_time,
+            b.time + gr.voting_start_delay * INTERVAL '1 second' AS vote_start,
+            gr.voting_start_delay                        AS window_secs
+          FROM governor_proposed gp
+          JOIN event_keys ek       ON gp.event_id       = ek.id
+          JOIN blocks b            ON ek.block_number   = b.number
+          JOIN governor_reconfigured gr
+            ON gp.config_version    = gr.version
+        )
+        SELECT
+          pt.proposal_id,
+          ev.delegate,
+          -- integral(stake * dt)/window_secs
+          FLOOR(ev.weighted_time_sum / pt.window_secs) AS voting_weight
+        FROM proposal_times pt
+        JOIN LATERAL (
+          WITH events AS (
+            -- all stake/unstake deltas inside window
+            SELECT s.delegate, bl.time,        s.amount    AS delta
+            FROM staker_staked s
+            JOIN event_keys esk ON s.event_id = esk.id
+            JOIN blocks bl      ON esk.block_number = bl.number
+            WHERE bl.time BETWEEN pt.proposal_time AND pt.vote_start
+
+            UNION ALL
+
+            SELECT w.delegate, bl.time,      -w.amount    AS delta
+            FROM staker_withdrawn w
+            JOIN event_keys ew ON w.event_id = ew.id
+            JOIN blocks bl      ON ew.block_number = bl.number
+            WHERE bl.time BETWEEN pt.proposal_time AND pt.vote_start
+
+            UNION ALL
+            -- “bootstrap” each delegate's stake at proposal_time
+            SELECT
+              s2.delegate,
+              pt.proposal_time AS time,
+              SUM(s2.amount)   AS delta
+            FROM staker_staked s2
+            JOIN event_keys ek2 ON s2.event_id = ek2.id
+            JOIN blocks bl2     ON ek2.block_number = bl2.number
+            WHERE bl2.time < pt.proposal_time
+            GROUP BY s2.delegate
+
+            UNION ALL
+
+            SELECT
+              w2.delegate,
+              pt.proposal_time AS time,
+              -SUM(w2.amount)  AS delta
+            FROM staker_withdrawn w2
+            JOIN event_keys ek3 ON w2.event_id = ek3.id
+            JOIN blocks bl3     ON ek3.block_number = bl3.number
+            WHERE bl3.time < pt.proposal_time
+            GROUP BY w2.delegate
+
+            UNION ALL
+            -- sentinel at vote_start to cap last interval
+            SELECT d.delegate, pt.vote_start AS time, 0::NUMERIC AS delta
+            FROM (
+              SELECT delegate FROM staker_staked
+              UNION
+              SELECT delegate FROM staker_withdrawn
+            ) d
+          ),
+
+          -- running total = current stake for each delegate at each event‐time
+          stake_running AS (
+            SELECT
+              delegate,
+              time,
+              SUM(delta) OVER (
+                PARTITION BY delegate
+                ORDER BY time
+                ROWS UNBOUNDED PRECEDING
+              ) AS stake_amount
+            FROM events
+          ),
+
+          -- break into intervals [time, next_time) with constant stake_amount
+          intervals AS (
+            SELECT
+              delegate,
+              time         AS start_time,
+              LEAD(time) OVER (
+                PARTITION BY delegate
+                ORDER BY time
+              )        AS end_time,
+              stake_amount
+            FROM stake_running
+          )
+
+          -- integrate stake_amount * duration
+          SELECT
+            delegate,
+            SUM(
+              stake_amount
+              * EXTRACT(
+                  EPOCH FROM (end_time - start_time)
+                )
+            ) AS weighted_time_sum
+          FROM intervals
+          WHERE end_time IS NOT NULL
+          GROUP BY delegate
+        ) ev ON TRUE
+        ORDER BY pt.proposal_id, ev.delegate
+        );
+        
+        CREATE MATERIALIZED VIEW IF NOT EXISTS proposal_delegate_voting_weights_materialized AS
+        (
+        SELECT 
+            proposal_id,
+            delegate,
+            voting_weight
+        FROM proposal_delegate_voting_weights_view
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_proposal_delegate_voting_weights_unique ON proposal_delegate_voting_weights_materialized (proposal_id, delegate);
 
         CREATE OR REPLACE FUNCTION calculate_staker_rewards(
             start_time timestamptz,
@@ -1359,76 +1485,78 @@ export class DAO {
                 ORDER BY total_reward DESC;
         END;
         $$ LANGUAGE plpgsql;
-
     `);
   }
 
   public async refreshAnalyticalTables({ since }: { since: Date }) {
     await this.pg.query({
       text: `
-                INSERT INTO hourly_volume_by_token
-                    (SELECT swaps.pool_key_hash                                                      AS   key_hash,
-                            DATE_TRUNC('hour', blocks.time)                                          AS   hour,
-                            (CASE WHEN swaps.delta0 >= 0 THEN pool_keys.token0 ELSE pool_keys.token1 END) token,
-                            SUM(CASE WHEN swaps.delta0 >= 0 THEN swaps.delta0 ELSE swaps.delta1 END) AS   volume,
-                            SUM(FLOOR(((CASE WHEN delta0 >= 0 THEN swaps.delta0 ELSE swaps.delta1 END) *
-                                       pool_keys.fee) /
-                                      340282366920938463463374607431768211456))                      AS   fees,
-                            COUNT(1)                                                                 AS   swap_count
-                     FROM swaps
-                              JOIN pool_keys ON swaps.pool_key_hash = pool_keys.key_hash
-                              JOIN event_keys ON swaps.event_id = event_keys.id
-                              JOIN blocks ON event_keys.block_number = blocks.number
-                     WHERE DATE_TRUNC('hour', blocks.time) >= DATE_TRUNC('hour', $1::timestamptz)
-                     GROUP BY hour, swaps.pool_key_hash, token)
+                WITH swap_data AS (
+                    SELECT swaps.pool_key_hash                                                      AS   key_hash,
+                           DATE_TRUNC('hour', blocks.time)                                          AS   hour,
+                           (CASE WHEN swaps.delta0 >= 0 THEN pool_keys.token0 ELSE pool_keys.token1 END) token,
+                           SUM(CASE WHEN swaps.delta0 >= 0 THEN swaps.delta0 ELSE swaps.delta1 END) AS   volume,
+                           SUM(FLOOR(((CASE WHEN delta0 >= 0 THEN swaps.delta0 ELSE swaps.delta1 END) *
+                                      pool_keys.fee) /
+                                     0x100000000000000000000000000000000::numeric))                                          AS   fees,
+                           COUNT(1)                                                                 AS   swap_count
+                    FROM swaps
+                             JOIN pool_keys ON swaps.pool_key_hash = pool_keys.key_hash
+                             JOIN event_keys ON swaps.event_id = event_keys.id
+                             JOIN blocks ON event_keys.block_number = blocks.number
+                    WHERE DATE_TRUNC('hour', blocks.time) >= DATE_TRUNC('hour', $1::timestamptz)
+                    GROUP BY hour, swaps.pool_key_hash, token
+                ),
+                fees_token0 AS (
+                    SELECT fa.pool_key_hash                AS key_hash,
+                           DATE_TRUNC('hour', blocks.time) AS hour,
+                           pool_keys.token0                AS token,
+                           0                               AS volume,
+                           SUM(fa.amount0)                 AS fees,
+                           0                               AS swap_count
+                    FROM fees_accumulated fa
+                             JOIN pool_keys ON fa.pool_key_hash = pool_keys.key_hash
+                             JOIN event_keys ON fa.event_id = event_keys.id
+                             JOIN blocks ON event_keys.block_number = blocks.number
+                    WHERE DATE_TRUNC('hour', blocks.time) >= DATE_TRUNC('hour', $1::timestamptz)
+                      AND fa.amount0 > 0
+                    GROUP BY hour, fa.pool_key_hash, token
+                ),
+                fees_token1 AS (
+                    SELECT fa.pool_key_hash                AS key_hash,
+                           DATE_TRUNC('hour', blocks.time) AS hour,
+                           pool_keys.token1                AS token,
+                           0                               AS volume,
+                           SUM(fa.amount1)                 AS fees,
+                           0                               AS swap_count
+                    FROM fees_accumulated fa
+                             JOIN pool_keys ON fa.pool_key_hash = pool_keys.key_hash
+                             JOIN event_keys ON fa.event_id = event_keys.id
+                             JOIN blocks ON event_keys.block_number = blocks.number
+                    WHERE DATE_TRUNC('hour', blocks.time) >= DATE_TRUNC('hour', $1::timestamptz)
+                      AND fa.amount1 > 0
+                    GROUP BY hour, fa.pool_key_hash, token
+                ),
+                combined_data AS (
+                    SELECT key_hash, hour, token, volume, fees, swap_count FROM swap_data
+                    UNION ALL
+                    SELECT key_hash, hour, token, volume, fees, swap_count FROM fees_token0
+                    UNION ALL
+                    SELECT key_hash, hour, token, volume, fees, swap_count FROM fees_token1
+                )
+                INSERT INTO hourly_volume_by_token (key_hash, hour, token, volume, fees, swap_count)
+                SELECT key_hash,
+                       hour,
+                       token,
+                       SUM(volume)     AS volume,
+                       SUM(fees)       AS fees,
+                       SUM(swap_count) AS swap_count
+                FROM combined_data
+                GROUP BY key_hash, hour, token
                 ON CONFLICT (key_hash, hour, token)
                     DO UPDATE SET volume     = excluded.volume,
                                   fees       = excluded.fees,
                                   swap_count = excluded.swap_count;
-            `,
-      values: [since],
-    });
-
-    await this.pg.query({
-      text: `
-                INSERT INTO hourly_volume_by_token
-                    (SELECT fa.pool_key_hash                AS key_hash,
-                            DATE_TRUNC('hour', blocks.time) AS hour,
-                            pool_keys.token0                AS token,
-                            0                               AS volume,
-                            SUM(fa.amount0)                 AS fees,
-                            0                               AS swap_count
-                     FROM fees_accumulated fa
-                              JOIN pool_keys ON fa.pool_key_hash = pool_keys.key_hash
-                              JOIN event_keys ON fa.event_id = event_keys.id
-                              JOIN blocks ON event_keys.block_number = blocks.number
-                     WHERE DATE_TRUNC('hour', blocks.time) >= DATE_TRUNC('hour', $1::timestamptz)
-                       AND fa.amount0 > 0
-                     GROUP BY hour, fa.pool_key_hash, token)
-                ON CONFLICT (key_hash, hour, token)
-                    DO UPDATE SET fees = excluded.fees + hourly_volume_by_token.fees;
-            `,
-      values: [since],
-    });
-
-    await this.pg.query({
-      text: `
-                INSERT INTO hourly_volume_by_token
-                    (SELECT fa.pool_key_hash                AS key_hash,
-                            DATE_TRUNC('hour', blocks.time) AS hour,
-                            pool_keys.token1                AS token,
-                            0                               AS volume,
-                            SUM(fa.amount1)                 AS fees,
-                            0                               AS swap_count
-                     FROM fees_accumulated fa
-                              JOIN pool_keys ON fa.pool_key_hash = pool_keys.key_hash
-                              JOIN event_keys ON fa.event_id = event_keys.id
-                              JOIN blocks ON event_keys.block_number = blocks.number
-                     WHERE DATE_TRUNC('hour', blocks.time) >= DATE_TRUNC('hour', $1::timestamptz)
-                       AND fa.amount1 > 0
-                     GROUP BY hour, fa.pool_key_hash, token)
-                ON CONFLICT (key_hash, hour, token)
-                    DO UPDATE SET fees = excluded.fees + hourly_volume_by_token.fees;
             `,
       values: [since],
     });
@@ -1610,6 +1738,7 @@ export class DAO {
       REFRESH MATERIALIZED VIEW CONCURRENTLY latest_token_registrations;
       REFRESH MATERIALIZED VIEW CONCURRENTLY token_pair_realized_volatility;
       REFRESH MATERIALIZED VIEW CONCURRENTLY pool_market_depth;
+      REFRESH MATERIALIZED VIEW CONCURRENTLY proposal_delegate_voting_weights_materialized;
     `);
   }
 
