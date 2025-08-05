@@ -486,7 +486,9 @@ export const EVENT_PROCESSORS = [
     parser: parseLiquidityUpdated,
     async handle(dao, { parsed, key }): Promise<void> {
       logger.debug("LiquidityUpdated", { parsed, key });
-      await dao.insertLiquidityUpdatedEvent(parsed, key);
+      if (parsed.liquidity_factor !== 0n) {
+        await dao.insertLiquidityUpdatedEvent(parsed, key);
+      }
     },
   },
 ] as const;

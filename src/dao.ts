@@ -874,9 +874,8 @@ export class DAO {
         
         CREATE MATERIALIZED VIEW IF NOT EXISTS spline_pools_materialized AS
         (
-        SELECT key_hash AS pool_key_hash
-        FROM pool_keys
-        WHERE extension = 4
+        SELECT DISTINCT pool_key_hash
+        FROM liquidity_updated
         );
         CREATE UNIQUE INDEX IF NOT EXISTS idx_spline_pools_materialized_pool_key_hash ON spline_pools_materialized USING btree (pool_key_hash);
 
