@@ -70,6 +70,8 @@ import { parseSnapshotEvent } from "./events/oracle";
 import type { SnapshotEvent } from "./events/oracle";
 import { parseOrderClosed, parseOrderPlaced } from "./events/limitOrders";
 import type { OrderClosedEvent, OrderPlacedEvent } from "./events/limitOrders";
+import { parseLiquidityUpdated } from "./events/spline";
+import type { LiquidityUpdatedEvent } from "./events/spline";
 
 export const EVENT_PROCESSORS = [
   <EventProcessor<LegacyPositionMintedEvent>>{
@@ -471,6 +473,22 @@ export const EVENT_PROCESSORS = [
     async handle(dao, { parsed, key }): Promise<void> {
       logger.debug("OrderClosed", { parsed, key });
       await dao.insertOrderClosedEvent(parsed, key);
+    },
+  },
+  <EventProcessor<LiquidityUpdatedEvent>>{
+    filter: {
+      fromAddress: process.env.LIQUIDITY_PROVIDER_ADDRESS,
+      keys: [
+        // LiquidityUpdated
+        "0x0203c047cc01ab425e271dd20fc0651f0e3ed06fb6545850508001db3c822b5d",
+      ],
+    },
+    parser: parseLiquidityUpdated,
+    async handle(dao, { parsed, key }): Promise<void> {
+      logger.debug("LiquidityUpdated", { parsed, key });
+      if (parsed.liquidity_factor !== 0n) {
+        await dao.insertLiquidityUpdatedEvent(parsed, key);
+      }
     },
   },
 ] as const;

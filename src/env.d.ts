@@ -10,6 +10,7 @@ declare namespace NodeJS {
     GOVERNOR_ADDRESS: `0x${string}`;
     ORACLE_ADDRESS: `0x${string}`;
     LIMIT_ORDERS_ADDRESS: `0x${string}`;
+    LIQUIDITY_PROVIDER_ADDRESS: `0x${string}`;
 
     TOKEN_REGISTRY_ADDRESS: `0x${string}`;
     TOKEN_REGISTRY_V2_ADDRESS: `0x${string}`;
