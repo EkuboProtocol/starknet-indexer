@@ -35,6 +35,7 @@ import type {
 } from "./events/tokenRegistry";
 import type { SnapshotEvent } from "./events/oracle";
 import type { OrderClosedEvent, OrderPlacedEvent } from "./events/limitOrders";
+import type { LiquidityUpdatedEvent } from "./events/spline.ts";
 
 const MAX_TICK_SPACING = 354892;
 const LIMIT_ORDER_TICK_SPACING = 128;
@@ -216,7 +217,7 @@ export class DAO {
             amount1       NUMERIC NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_fees_accumulated_pool_key_hash ON fees_accumulated (pool_key_hash);
-
+        
         CREATE TABLE IF NOT EXISTS pool_initializations
         (
             event_id      int8 REFERENCES event_keys (id) ON DELETE CASCADE PRIMARY KEY,
@@ -745,6 +746,22 @@ export class DAO {
         CREATE INDEX IF NOT EXISTS idx_limit_order_closed ON limit_order_closed USING btree (owner, salt);
         CREATE INDEX IF NOT EXISTS idx_limit_order_closed_salt_event_id_desc ON limit_order_closed (salt, event_id DESC) INCLUDE (amount0, amount1);
 
+        CREATE TABLE IF NOT EXISTS liquidity_updated
+        (
+            event_id         int8    NOT NULL PRIMARY KEY REFERENCES event_keys (id) ON DELETE CASCADE,
+            
+            pool_key_hash    NUMERIC NOT NULL REFERENCES pool_keys (key_hash),
+            
+            sender           NUMERIC NOT NULL,
+            liquidity_factor NUMERIC NOT NULL,
+            shares           NUMERIC NOT NULL,
+            amount0          NUMERIC NOT NULL,
+            amount1          NUMERIC NOT NULL,
+            protocol_fees0   NUMERIC NOT NULL,
+            protocol_fees1   NUMERIC NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_liquidity_updated_pool_key_hash ON liquidity_updated (pool_key_hash);
+        
         CREATE OR REPLACE VIEW twamm_pool_states_view AS
         (
         WITH lvoe_id AS (SELECT key_hash, MAX(event_id) AS event_id
@@ -854,6 +871,13 @@ export class DAO {
         SELECT pool_key_hash, last_event_id
         FROM limit_order_pool_states_view);
         CREATE UNIQUE INDEX IF NOT EXISTS idx_limit_order_pool_states_materialized_pool_key_hash ON limit_order_pool_states_materialized USING btree (pool_key_hash);
+        
+        CREATE MATERIALIZED VIEW IF NOT EXISTS spline_pools_materialized AS
+        (
+        SELECT DISTINCT pool_key_hash
+        FROM liquidity_updated
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_spline_pools_materialized_pool_key_hash ON spline_pools_materialized USING btree (pool_key_hash);
 
         CREATE OR REPLACE VIEW last_24h_pool_stats_view AS
         (
@@ -1724,6 +1748,7 @@ export class DAO {
       REFRESH MATERIALIZED VIEW CONCURRENTLY twamm_sale_rate_deltas_materialized;
       REFRESH MATERIALIZED VIEW CONCURRENTLY oracle_pool_states_materialized;
       REFRESH MATERIALIZED VIEW CONCURRENTLY limit_order_pool_states_materialized;
+      REFRESH MATERIALIZED VIEW CONCURRENTLY spline_pools_materialized;
     `);
   }
 
@@ -2766,6 +2791,46 @@ export class DAO {
         parsed.order_key.tick,
         parsed.amount0,
         parsed.amount1,
+      ],
+    });
+  }
+
+  public async insertLiquidityUpdatedEvent(event: LiquidityUpdatedEvent, key: EventKey) {
+    const pool_key_hash = await this.insertPoolKeyHash(event.pool_key);
+  
+    await this.pg.query({
+      text: `
+            WITH inserted_event AS (
+                INSERT INTO event_keys (block_number, transaction_index, event_index, transaction_hash, emitter)
+                    VALUES ($1, $2, $3, $4, $5)
+                    RETURNING id)
+            INSERT
+            INTO liquidity_updated
+            (event_id,
+             pool_key_hash,
+             sender,
+             liquidity_factor,
+             shares,
+             amount0,
+             amount1,
+             protocol_fees0,
+             protocol_fees1)
+            VALUES ((SELECT id FROM inserted_event), $6, $7, $8, $9, $10, $11, $12, $13);
+        `,
+      values: [
+        key.blockNumber,
+        key.transactionIndex,
+        key.eventIndex,
+        key.transactionHash,
+        key.emitter,
+        pool_key_hash,
+        event.sender,
+        event.liquidity_factor,
+        event.shares,
+        event.amount0,
+        event.amount1,
+        event.protocol_fees0,
+        event.protocol_fees1,
       ],
     });
   }

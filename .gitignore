@@ -4,3 +4,4 @@
 *.cursor.json
 dist/
 node_modules
+scripts/
