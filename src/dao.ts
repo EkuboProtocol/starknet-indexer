@@ -1135,7 +1135,7 @@ export class DAO {
             pk.token1,
             dp.depth_percent,
             floor(ln(1::numeric + dp.depth_percent) / ln(1.000001))::int4 AS depth_in_ticks,
-            ceil(log(1::numeric + (pk.fee / 0x10000000000000000::numeric)) / log(1.000001))::int4 AS fee_in_ticks,
+            ceil(log(1::numeric + (pk.fee / 0x100000000000000000000000000000000::numeric)) / log(1.000001))::int4 AS fee_in_ticks,
             round(mt.median_tick)::int4 AS last_tick
           FROM
             pool_keys pk
