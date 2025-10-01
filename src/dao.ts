@@ -1083,7 +1083,7 @@ export class DAO {
             ON token_pair_realized_volatility (token0, token1);
 
         CREATE OR REPLACE VIEW pool_market_depth_view AS
-        WITH depth_percentages AS (SELECT (POWER(1.3, generate_series(0, 20)) * 0.001)::float AS depth_percent),
+        WITH depth_percentages AS (SELECT (POWER(1.21, generate_series(0, 40)) * 0.00005)::float AS depth_percent),
              pool_states AS (SELECT pk.key_hash,
                                     pk.token0,
                                     pk.token1,
